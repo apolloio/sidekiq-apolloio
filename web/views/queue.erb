@@ -38,7 +38,7 @@
   </div>
   <div class="col-sm-5 pull-right flip">
     <% if defined?(Sidekiq::Web::DynamicUiContent) %>
-      <%= Sidekiq::Web::DynamicUiComponent.queue_page_header_right(@queue) %>
+      <%= Sidekiq::Web::DynamicUiContent.queue_page_header_right(@queue) %>
       <% url = "#{root_path}queues/#{CGI.escape(@name)}" %>
     <% else %>
       <%= erb :_paging, locals: { url: "#{root_path}queues/#{CGI.escape(@name)}" } %>
