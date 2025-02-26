@@ -36,8 +36,13 @@
       </form>
     </h3>
   </div>
-  <div class="col-sm-4 pull-right flip">
-    <%= erb :_paging, locals: { url: "#{root_path}queues/#{CGI.escape(@name)}" } %>
+  <div class="col-sm-5 pull-right flip">
+    <% if defined?(Sidekiq::Web::DynamicUiContent) %>
+      <%= Sidekiq::Web::DynamicUiContent.queue_page_header_right(@queue) %>
+      <% url = "#{root_path}queues/#{CGI.escape(@name)}" %>
+    <% else %>
+      <%= erb :_paging, locals: { url: "#{root_path}queues/#{CGI.escape(@name)}" } %>
+    <% end %>
   </div>
 </header>
 <div class="table_container">
