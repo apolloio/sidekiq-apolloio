@@ -65,9 +65,9 @@ module Sidekiq
       else
         processes.each do |pro|
           pro.quiet! if params["quiet"]
-          puts "quit clicked"
+          puts "quit clicked from else"
           pro.stop! if params["stop"]
-          puts "stop clicked"
+          puts "stop clicked from else"
         end
       end
 
