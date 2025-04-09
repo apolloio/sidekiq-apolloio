@@ -59,11 +59,15 @@ module Sidekiq
       if params["identity"]
         p = Sidekiq::Process.new("identity" => params["identity"])
         p.quiet! if params["quiet"]
+        puts "quit clicked"
         p.stop! if params["stop"]
+        puts "stop clicked"
       else
         processes.each do |pro|
           pro.quiet! if params["quiet"]
+          puts "quit clicked"
           pro.stop! if params["stop"]
+          puts "stop clicked"
         end
       end
 
