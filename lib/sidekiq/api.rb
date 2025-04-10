@@ -870,6 +870,7 @@ module Sidekiq
 
     def stop!
       signal("TERM")
+      puts "TERM signal called from Process"
     end
 
     def dump_threads

@@ -47,9 +47,11 @@ module Sidekiq
     # It can take up to the timeout to complete.
     def stop
       deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + @options[:timeout]
+      puts "Launcer stop called"
 
       @done = true
       @manager.quiet
+      puts "Launcer stop called after manger"
       @poller.terminate
 
       @manager.stop(deadline)

@@ -68,6 +68,7 @@ def handle_signal(launcher, sig)
     # http://jira.codehaus.org/browse/JRUBY-4637
     raise Interrupt
   when 'TERM'
+    puts "called TERM and calling Interrupt"
     # Heroku sends TERM and then waits 30 seconds for process to exit.
     raise Interrupt
   when 'TSTP'
