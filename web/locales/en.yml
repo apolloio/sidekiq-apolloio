@@ -7,6 +7,7 @@ en: # <---- change this to your locale code
   Realtime: Real-time
   History: History
   Busy: Busy
+  Utilization: Utilization
   Processed: Processed
   Failed: Failed
   Scheduled: Scheduled
@@ -66,7 +67,9 @@ en: # <---- change this to your locale code
   DeadJobs: Dead Jobs
   NoDeadJobsFound: No dead jobs were found
   Dead: Dead
+  Process: Process
   Processes: Processes
+  Name: Name
   Thread: Thread
   Threads: Threads
   Jobs: Jobs
@@ -85,3 +88,10 @@ en: # <---- change this to your locale code
   Unpause: Unpause
   StartExecution: Run all hours
   PauseTillNonWorkHours: Run non-work hours
+  Metrics: Metrics
+  NoDataFound: No data found
+  ExecutionTime: Total Execution Time
+  AvgExecutionTime: Average Execution Time
+  Context: Context
+  Bucket: Bucket
+  NoJobMetricsFound: No recent job metrics were found

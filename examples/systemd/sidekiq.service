@@ -2,6 +2,14 @@
 # This file tells systemd how to run Sidekiq as a 24/7 long-running daemon.
 #
 # Customize this file based on your bundler location, app directory, etc.
+#
+# If you are going to run this as a user service (or you are going to use capistrano-sidekiq)
+# Customize and copy this to ~/.config/systemd/user
+# Then run:
+#   - systemctl --user enable sidekiq
+#   - systemctl --user {start,stop,restart} sidekiq
+#
+# If you are going to run this as a system service
 # Customize and copy this into /usr/lib/systemd/system (CentOS) or /lib/systemd/system (Ubuntu).
 # Then run:
 #   - systemctl enable sidekiq
@@ -32,7 +40,7 @@ After=syslog.target network.target
 #
 # As of v6.0.6, Sidekiq automatically supports systemd's `Type=notify` and watchdog service
 # monitoring. If you are using an earlier version of Sidekiq, change this to `Type=simple`
-# and remove the `WatchdogSec=5` line.
+# and remove the `WatchdogSec` line.
 #
 #      !!!!  !!!!  !!!!
 #
@@ -44,17 +52,23 @@ WorkingDirectory=/opt/myapp/current
 # If you use rbenv:
 # ExecStart=/bin/bash -lc 'exec /home/deploy/.rbenv/shims/bundle exec sidekiq -e production'
 # If you use the system's ruby:
-ExecStart=/usr/local/bin/bundle exec sidekiq -e production
-# If you use rvm in production, don't.
+# ExecStart=/usr/local/bin/bundle exec sidekiq -e production
+# If you use rvm in production without gemset and your ruby version is 2.6.5
+# ExecStart=/home/deploy/.rvm/gems/ruby-2.6.5/wrappers/bundle exec sidekiq -e production
+# If you use rvm in production with gemset and your ruby version is 2.6.5
+# ExecStart=/home/deploy/.rvm/gems/ruby-2.6.5@gemset-name/wrappers/bundle exec sidekiq -e production
+# If you use rvm in production with gemset and ruby version/gemset is specified in .ruby-version,
+# .ruby-gemsetor or .rvmrc file in the working directory
+ExecStart=/home/deploy/.rvm/bin/rvm in /opt/myapp/current do bundle exec sidekiq -e production
 
-# use `systemctl reload sidekiq` to send the quiet signal to Sidekiq
-# at the start of your deploy process.
-# Or you can use `systemctl kill -s TSTP sidekiq`
-ExecReload=/usr/bin/kill -TSTP $MAINPID
+# Use `systemctl kill -s TSTP sidekiq` to quiet the Sidekiq process
 
-User=deploy
-Group=deploy
-UMask=0002
+# Uncomment this if you are going to use this as a system service
+# if using as a user service then leave commented out, or you will get an error trying to start the service
+# !!! Change this to your deploy user account if you are using this as a system service !!!
+# User=deploy
+# Group=deploy
+# UMask=0002
 
 # Greatly reduce Ruby memory fragmentation and heap usage
 # https://www.mikeperham.com/2018/04/25/taming-rails-memory-bloat/
@@ -62,9 +76,9 @@ Environment=MALLOC_ARENA_MAX=2
 
 # if we crash, restart
 RestartSec=1
-Restart=on-failure
+Restart=always
 
-# output goes to /var/log/syslog
+# output goes to /var/log/syslog (Ubuntu) or /var/log/messages (CentOS)
 StandardOutput=syslog
 StandardError=syslog
 

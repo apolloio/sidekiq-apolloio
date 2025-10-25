@@ -4,7 +4,6 @@ module Sidekiq
   class WebApplication
     extend WebRouter
 
-    CONTENT_LENGTH = "Content-Length"
     REDIS_KEYS = %w[redis_version uptime_in_days connected_clients used_memory_human used_memory_peak_human]
     CSP_HEADER = [
       "default-src 'self' https: http:",
@@ -42,16 +41,42 @@ module Sidekiq
       # nothing, backwards compatibility
     end
 
+    head "/" do
+      # HEAD / is the cheapest heartbeat possible,
+      # it hits Redis to ensure connectivity
+      Sidekiq.redis { |c| c.llen("queue:default") }
+      ""
+    end
+
     get "/" do
       @redis_info = redis_info.select { |k, v| REDIS_KEYS.include? k }
-      stats_history = Sidekiq::Stats::History.new((params["days"] || 30).to_i)
+      days = (params["days"] || 30).to_i
+      return halt(401) if days < 1 || days > 180
+
+      stats_history = Sidekiq::Stats::History.new(days)
       @processed_history = stats_history.processed
       @failed_history = stats_history.failed
 
       erb(:dashboard)
     end
 
+    get "/metrics" do
+      q = Sidekiq::Metrics::Query.new
+      @query_result = q.top_jobs
+      erb(:metrics)
+    end
+
+    get "/metrics/:name" do
+      @name = route_params[:name]
+      q = Sidekiq::Metrics::Query.new
+      @query_result = q.for_job(@name)
+      erb(:metrics_for_job)
+    end
+
     get "/busy" do
+      @count = (params["count"] || 100).to_i
+      (@current_page, @total_size, @workset) = page_items(workset, params["page"], @count)
+
       erb(:busy)
     end
 
@@ -76,15 +101,17 @@ module Sidekiq
       erb(:queues)
     end
 
+    QUEUE_NAME = /\A[a-z_:.\-0-9]+\z/i
+
     get "/queues/:name" do
       @name = route_params[:name]
 
-      halt(404) unless @name
+      halt(404) if !@name || @name !~ QUEUE_NAME
 
       @count = (params["count"] || 25).to_i
       @queue = Sidekiq::Queue.new(@name)
-      (@current_page, @total_size, @messages) = page("queue:#{@name}", params["page"], @count, reverse: params["direction"] == "asc")
-      @messages = @messages.map { |msg| Sidekiq::Job.new(msg, @name) }
+      (@current_page, @total_size, @jobs) = page("queue:#{@name}", params["page"], @count, reverse: params["direction"] == "asc")
+      @jobs = @jobs.map { |msg| Sidekiq::JobRecord.new(msg, @name) }
 
       erb(:queue)
     end
@@ -115,7 +142,7 @@ module Sidekiq
 
     post "/queues/:name/delete" do
       name = route_params[:name]
-      Sidekiq::Job.new(params["key_val"], name).delete
+      Sidekiq::JobRecord.new(params["key_val"], name).delete
 
       redirect_with_query("#{root_path}queues/#{CGI.escape(name)}")
     end
@@ -298,37 +325,35 @@ module Sidekiq
 
     def call(env)
       action = self.class.match(env)
-      return [404, {"Content-Type" => "text/plain", "X-Cascade" => "pass"}, ["Not Found"]] unless action
+      return [404, {"content-type" => "text/plain", "x-cascade" => "pass"}, ["Not Found"]] unless action
 
       app = @klass
-      resp = catch(:halt) do # rubocop:disable Standard/SemanticBlocks
+      resp = catch(:halt) do
         self.class.run_befores(app, action)
         action.instance_exec env, &action.block
       ensure
         self.class.run_afters(app, action)
       end
 
-      resp = case resp
+      case resp
       when Array
         # redirects go here
         resp
       else
         # rendered content goes here
         headers = {
-          "Content-Type" => "text/html",
-          "Cache-Control" => "no-cache",
-          "Content-Language" => action.locale,
-          "Content-Security-Policy" => CSP_HEADER
+          "content-type" => "text/html",
+          "cache-control" => "private, no-store",
+          "content-language" => action.locale,
+          "content-security-policy" => CSP_HEADER
         }
         # we'll let Rack calculate Content-Length for us.
         [200, headers, [resp]]
       end
-
-      resp
     end
 
     def self.helpers(mod = nil, &block)
-      if block_given?
+      if block
         WebAction.class_eval(&block)
       else
         WebAction.send(:include, mod)

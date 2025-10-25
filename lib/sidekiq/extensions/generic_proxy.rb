@@ -10,7 +10,7 @@ module Sidekiq
       def initialize(performable, target, options = {})
         @performable = performable
         @target = target
-        @opts = options
+        @opts = options.transform_keys(&:to_s)
       end
 
       def method_missing(name, *args)
@@ -24,7 +24,9 @@ module Sidekiq
         if marshalled.size > SIZE_LIMIT
           ::Sidekiq.logger.warn { "#{@target}.#{name} job argument is #{marshalled.bytesize} bytes, you should refactor it to reduce the size" }
         end
-        @performable.client_push({"class" => @performable, "args" => [marshalled]}.merge(@opts))
+        @performable.client_push({"class" => @performable,
+                                  "args" => [marshalled],
+                                  "display_class" => "#{@target}.#{name}"}.merge(@opts))
       end
     end
   end

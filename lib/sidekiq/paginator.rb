@@ -3,7 +3,7 @@
 module Sidekiq
   module Paginator
     def page(key, pageidx = 1, page_size = 25, opts = nil)
-      current_page = pageidx.to_i < 1 ? 1 : pageidx.to_i
+      current_page = (pageidx.to_i < 1) ? 1 : pageidx.to_i
       pageidx = current_page - 1
       total_size = 0
       items = []
@@ -16,22 +16,22 @@ module Sidekiq
 
         case type
         when "zset"
-          total_size, items = conn.multi {
-            conn.zcard(key)
+          total_size, items = conn.multi { |transaction|
+            transaction.zcard(key)
             if rev
-              conn.zrevrange(key, starting, ending, with_scores: true)
+              transaction.zrevrange(key, starting, ending, withscores: true)
             else
-              conn.zrange(key, starting, ending, with_scores: true)
+              transaction.zrange(key, starting, ending, withscores: true)
             end
           }
           [current_page, total_size, items]
         when "list"
-          total_size, items = conn.multi {
-            conn.llen(key)
+          total_size, items = conn.multi { |transaction|
+            transaction.llen(key)
             if rev
-              conn.lrange(key, -ending - 1, -starting - 1)
+              transaction.lrange(key, -ending - 1, -starting - 1)
             else
-              conn.lrange(key, starting, ending)
+              transaction.lrange(key, starting, ending)
             end
           }
           items.reverse! if rev
@@ -42,6 +42,14 @@ module Sidekiq
           raise "can't page a #{type}"
         end
       end
+    end
+
+    def page_items(items, pageidx = 1, page_size = 25)
+      current_page = (pageidx.to_i < 1) ? 1 : pageidx.to_i
+      pageidx = current_page - 1
+      starting = pageidx * page_size
+      items = items.to_a
+      [current_page, items.size, items[starting, page_size]]
     end
   end
 end

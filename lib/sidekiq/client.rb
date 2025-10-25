@@ -2,9 +2,12 @@
 
 require "securerandom"
 require "sidekiq/middleware/chain"
+require "sidekiq/job_util"
 
 module Sidekiq
   class Client
+    include Sidekiq::JobUtil
+
     ##
     # Define client-side middleware:
     #
@@ -12,14 +15,14 @@ module Sidekiq
     #   client.middleware do |chain|
     #     chain.use MyClientMiddleware
     #   end
-    #   client.push('class' => 'SomeWorker', 'args' => [1,2,3])
+    #   client.push('class' => 'SomeJob', 'args' => [1,2,3])
     #
     # All client instances default to the globally-defined
     # Sidekiq.client_middleware but you can change as necessary.
     #
     def middleware(&block)
       @chain ||= Sidekiq.client_middleware
-      if block_given?
+      if block
         @chain = @chain.dup
         yield @chain
       end
@@ -46,16 +49,16 @@ module Sidekiq
     # The main method used to push a job to Redis.  Accepts a number of options:
     #
     #   queue - the named queue to use, default 'default'
-    #   class - the worker class to call, required
+    #   class - the job class to call, required
     #   args - an array of simple arguments to the perform method, must be JSON-serializable
     #   at - timestamp to schedule the job (optional), must be Numeric (e.g. Time.now.to_f)
     #   retry - whether to retry this job if it fails, default true or an integer number of retries
     #   backtrace - whether to save any error backtrace, default false
     #
     # If class is set to the class name, the jobs' options will be based on Sidekiq's default
-    # worker options. Otherwise, they will be based on the job class's options.
+    # job options. Otherwise, they will be based on the job class's options.
     #
-    # Any options valid for a worker class's sidekiq_options are also available here.
+    # Any options valid for a job class's sidekiq_options are also available here.
     #
     # All options must be strings, not symbols.  NB: because we are serializing to JSON, all
     # symbols in 'args' will be converted to strings.  Note that +backtrace: true+ can take quite a bit of
@@ -64,13 +67,15 @@ module Sidekiq
     # Returns a unique Job ID.  If middleware stops the job, nil will be returned instead.
     #
     # Example:
-    #   push('queue' => 'my_queue', 'class' => MyWorker, 'args' => ['foo', 1, :bat => 'bar'])
+    #   push('queue' => 'my_queue', 'class' => MyJob, 'args' => ['foo', 1, :bat => 'bar'])
     #
     def push(item)
       normed = normalize_item(item)
-      payload = process_single(item["class"], normed)
-
+      payload = middleware.invoke(item["class"], normed, normed["queue"], @redis_pool) do
+        normed
+      end
       if payload
+        verify_json(payload)
         raw_push([payload])
         payload["jid"]
       end
@@ -90,19 +95,25 @@ module Sidekiq
     # Returns an array of the of pushed jobs' jids.  The number of jobs pushed can be less
     # than the number given if the middleware stopped processing for one or more jobs.
     def push_bulk(items)
-      arg = items["args"].first
-      return [] unless arg # no jobs to push
-      raise ArgumentError, "Bulk arguments must be an Array of Arrays: [[1], [2]]" unless arg.is_a?(Array)
+      args = items["args"]
+      raise ArgumentError, "Bulk arguments must be an Array of Arrays: [[1], [2]]" unless args.is_a?(Array) && args.all?(Array)
+      return [] if args.empty? # no jobs to push
 
       at = items.delete("at")
-      raise ArgumentError, "Job 'at' must be a Numeric or an Array of Numeric timestamps" if at && (Array(at).empty? || !Array(at).all?(Numeric))
+      raise ArgumentError, "Job 'at' must be a Numeric or an Array of Numeric timestamps" if at && (Array(at).empty? || !Array(at).all? { |entry| entry.is_a?(Numeric) })
+      raise ArgumentError, "Job 'at' Array must have same size as 'args' Array" if at.is_a?(Array) && at.size != args.size
+
+      jid = items.delete("jid")
+      raise ArgumentError, "Explicitly passing 'jid' when pushing more than one job is not supported" if jid && args.size > 1
 
       normed = normalize_item(items)
-      payloads = items["args"].map.with_index { |args, index|
-        copy = normed.merge("args" => args, "jid" => SecureRandom.hex(12), "enqueued_at" => Time.now.to_f)
+      payloads = args.map.with_index { |job_args, index|
+        copy = normed.merge("args" => job_args, "jid" => SecureRandom.hex(12))
         copy["at"] = (at.is_a?(Array) ? at[index] : at) if at
-
-        result = process_single(items["class"], copy)
+        result = middleware.invoke(items["class"], copy, copy["queue"], @redis_pool) do
+          verify_json(copy)
+          copy
+        end
         result || nil
       }.compact
 
@@ -115,8 +126,8 @@ module Sidekiq
     #
     #   pool = ConnectionPool.new { Redis.new }
     #   Sidekiq::Client.via(pool) do
-    #     SomeWorker.perform_async(1,2,3)
-    #     SomeOtherWorker.perform_async(1,2,3)
+    #     SomeJob.perform_async(1,2,3)
+    #     SomeOtherJob.perform_async(1,2,3)
     #   end
     #
     # Generally this is only needed for very large Sidekiq installs processing
@@ -141,10 +152,10 @@ module Sidekiq
       end
 
       # Resque compatibility helpers.  Note all helpers
-      # should go through Worker#client_push.
+      # should go through Sidekiq::Job#client_push.
       #
       # Example usage:
-      #   Sidekiq::Client.enqueue(MyWorker, 'foo', 1, :bat => 'bar')
+      #   Sidekiq::Client.enqueue(MyJob, 'foo', 1, :bat => 'bar')
       #
       # Messages are enqueued to the 'default' queue.
       #
@@ -153,19 +164,19 @@ module Sidekiq
       end
 
       # Example usage:
-      #   Sidekiq::Client.enqueue_to(:queue_name, MyWorker, 'foo', 1, :bat => 'bar')
+      #   Sidekiq::Client.enqueue_to(:queue_name, MyJob, 'foo', 1, :bat => 'bar')
       #
       def enqueue_to(queue, klass, *args)
         klass.client_push("queue" => queue, "class" => klass, "args" => args)
       end
 
       # Example usage:
-      #   Sidekiq::Client.enqueue_to_in(:queue_name, 3.minutes, MyWorker, 'foo', 1, :bat => 'bar')
+      #   Sidekiq::Client.enqueue_to_in(:queue_name, 3.minutes, MyJob, 'foo', 1, :bat => 'bar')
       #
       def enqueue_to_in(queue, interval, klass, *args)
         int = interval.to_f
         now = Time.now.to_f
-        ts = (int < 1_000_000_000 ? now + int : int)
+        ts = ((int < 1_000_000_000) ? now + int : int)
 
         item = {"class" => klass, "args" => args, "at" => ts, "queue" => queue}
         item.delete("at") if ts <= now
@@ -174,7 +185,7 @@ module Sidekiq
       end
 
       # Example usage:
-      #   Sidekiq::Client.enqueue_in(3.minutes, MyWorker, 'foo', 1, :bat => 'bar')
+      #   Sidekiq::Client.enqueue_in(3.minutes, MyJob, 'foo', 1, :bat => 'bar')
       #
       def enqueue_in(interval, klass, *args)
         klass.perform_in(interval, *args)
@@ -185,8 +196,23 @@ module Sidekiq
 
     def raw_push(payloads)
       @redis_pool.with do |conn|
-        conn.multi do
-          atomic_push(conn, payloads)
+        retryable = true
+        begin
+          conn.pipelined do |pipeline|
+            atomic_push(pipeline, payloads)
+          end
+        rescue RedisConnection.adapter::BaseError => ex
+          # 2550 Failover can cause the server to become a replica, need
+          # to disconnect and reopen the socket to get back to the primary.
+          # 4495 Use the same logic if we have a "Not enough replicas" error from the primary
+          # 4985 Use the same logic when a blocking command is force-unblocked
+          # The retry logic is copied from sidekiq.rb
+          if retryable && ex.message =~ /READONLY|NOREPLICAS|UNBLOCKED/
+            conn.disconnect!
+            retryable = false
+            retry
+          end
+          raise
         end
       end
       true
@@ -194,7 +220,7 @@ module Sidekiq
 
     def atomic_push(conn, payloads)
       if payloads.first.key?("at")
-        conn.zadd("schedule", payloads.map { |hash|
+        conn.zadd("schedule", payloads.flat_map { |hash|
           at = hash.delete("at").to_s
           [at, Sidekiq.dump_json(hash)]
         })
@@ -205,53 +231,8 @@ module Sidekiq
           entry["enqueued_at"] = now
           Sidekiq.dump_json(entry)
         }
-        conn.sadd("queues", queue)
+        conn.sadd("queues", [queue])
         conn.lpush("queue:#{queue}", to_push)
-      end
-    end
-
-    def process_single(worker_class, item)
-      queue = item["queue"]
-
-      middleware.invoke(worker_class, item, queue, @redis_pool) do
-        item
-      end
-    end
-
-    def normalize_item(item)
-      # 6.0.0 push_bulk bug, #4321
-      # TODO Remove after a while...
-      item.delete("at") if item.key?("at") && item["at"].nil?
-
-      raise(ArgumentError, "Job must be a Hash with 'class' and 'args' keys: { 'class' => SomeWorker, 'args' => ['bob', 1, :foo => 'bar'] }") unless item.is_a?(Hash) && item.key?("class") && item.key?("args")
-      raise(ArgumentError, "Job args must be an Array") unless item["args"].is_a?(Array)
-      raise(ArgumentError, "Job class must be either a Class or String representation of the class name") unless item["class"].is_a?(Class) || item["class"].is_a?(String)
-      raise(ArgumentError, "Job 'at' must be a Numeric timestamp") if item.key?("at") && !item["at"].is_a?(Numeric)
-      raise(ArgumentError, "Job tags must be an Array") if item["tags"] && !item["tags"].is_a?(Array)
-      # raise(ArgumentError, "Arguments must be native JSON types, see https://github.com/mperham/sidekiq/wiki/Best-Practices") unless JSON.load(JSON.dump(item['args'])) == item['args']
-
-      # merge in the default sidekiq_options for the item's class and/or wrapped element
-      # this allows ActiveJobs to control sidekiq_options too.
-      defaults = normalized_hash(item["class"])
-      defaults = defaults.merge(item["wrapped"].get_sidekiq_options) if item["wrapped"].respond_to?("get_sidekiq_options")
-      item = defaults.merge(item)
-
-      raise(ArgumentError, "Job must include a valid queue name") if item["queue"].nil? || item["queue"] == ""
-
-      item["class"] = item["class"].to_s
-      item["queue"] = item["queue"].to_s
-      item["jid"] ||= SecureRandom.hex(12)
-      item["created_at"] ||= Time.now.to_f
-
-      item
-    end
-
-    def normalized_hash(item_class)
-      if item_class.is_a?(Class)
-        raise(ArgumentError, "Message must include a Sidekiq::Worker class, not class name: #{item_class.ancestors.inspect}") unless item_class.respond_to?("get_sidekiq_options")
-        item_class.get_sidekiq_options
-      else
-        Sidekiq.default_worker_options
       end
     end
   end

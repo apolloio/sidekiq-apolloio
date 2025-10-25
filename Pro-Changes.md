@@ -1,14 +1,130 @@
 # Sidekiq Pro Changelog
 
-[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/main/Ent-Changes.md)
 
-Please see [http://sidekiq.org](http://sidekiq.org) for more details and how to buy.
+Please see [sidekiq.org](https://sidekiq.org/) for more details and how to buy.
 
-HEAD
+5.5.5
 ---------
 
-- Update `constantize` for batch callbacks. [#4469]
+- Lock Sidekiq Pro 5.x to Sidekiq 6.x.
+- Update IT localization
 
+5.5.4
+---------
+
+- Fix batch "pending == -1" race condition [#5524]
+
+5.5.3
+---------
+
+- Remove Redis 4.8.0 deprecation warnings
+
+5.5.2
+---------
+
+- Fix overly aggressive orphan check with large Sidekiq clusters [#5435]
+
+5.5.1
+---------
+
+- Unbreak queue pausing [#5382]
+
+5.5.0
+---------
+
+- DEPRECATION: remove support for statsd-ruby via `Sidekiq::Pro.statsd`.
+  dogstatsd-ruby will be the only supported statsd library in 6.0. [#5212]
+- Add `Sidekiq.via` API for targeting shards [#5269]
+```ruby
+SHARD1 = ConnectionPool.new { Redis.new(db: 0) }
+SHARD2 = ConnectionPool.new { Redis.new(db: 1) }
+Sidekiq.via(SHARD2) do
+  Sidekiq::Queue.all.sum(&:size)
+end
+```
+- Excise "worker" terminology from codebase [#4955]
+- Ensure batch callback metrics are always fired [#5217]
+- Added `error_type` tag for `job.failures` metrics [#5211]
+- Internal refactoring for Sidekiq 6.5.
+- Requires Sidekiq 6.5.
+
+5.3.1
+---------
+
+- Ensure sidekiq-pro/web pulls in sharding support [#5153]
+- Fix pipeline/multi deprecation in redis-rb 4.6.
+- Fix namespace issue with dogstatsd-ruby in Ruby 3+ [#5094]
+
+5.3.0
+---------
+
+- Fix thread-safety issue with Sidekiq::Pro::Config
+- Allow job-specific options in Statsd metrics [#5037]
+```ruby
+# add to your initializer
+Sidekiq::Middleware::Server::Statsd.options = ->(klass, job, q) do
+  {tags: ["worker:#{klass}", "queue:#{q}"]}.tap do |h|
+    h[:tags] << "tenant:#{job['tenant_id']}" if job["tenant_id"]
+  end
+end
+```
+
+5.2.4
+---------
+
+- Initialize paused queue set before allowing jobs to be fetched [#4975]
+
+5.2.3
+---------
+
+- Reduce superfluous logging of Redis errors [#4969]
+- Display dead JIDs on Batch details page [#4926]
+
+5.2.2
+---------
+
+- Include poison pill info in super_fetch's orphan handler [#4859]
+- Use Sidekiq::Batch::Immutable error so race conditions can easily be caught [#4845]
+- Fix sharded UI not using middleware in Sidekiq 6.2 [#4843]
+- Compatibility with dogstatsd-ruby 4.x and 5.x [#4863]
+
+5.2.1
+---------
+
+- Propagate death callbacks to parent batches [#4774]
+- Allow customization of Batch linger to quickly reclaim memory in Redis [#4772]
+- Fix disappearing processes in Busy due to super_fetch initialization when used in
+  tandem with `SIDEKIQ_PRELOAD_APP=1` in `sidekiqswarm`. [#4733]
+
+5.2.0
+---------
+
+- The Sidekiq Pro and Enterprise gem servers now `bundle install` much faster with **Bundler 2.2+** [#4158]
+- Fix issue with reliable push and multiple shards [#4669]
+- Fix Pro memory leak due to fetch refactoring in Sidekiq 6.1 [#4652]
+- Gracefully handle poison pill jobs [#4633]
+- Remove support for multi-shard batches [#4642]
+- Rename `Sidekiq::Rack::BatchStatus` to `Sidekiq::Pro::BatchStatus` [#4655]
+
+5.1.1
+---------
+
+- Fix broken basic fetcher [#4616]
+
+5.1.0
+---------
+
+- Remove old Statsd metrics with `WorkerName` in the name [#4377]
+```
+job.WorkerName.count -> job.count with tag worker:WorkerName
+job.WorkerName.perform -> job.perform with tag worker:WorkerName
+job.WorkerName.failure -> job.failure with tag worker:WorkerName
+```
+- Remove `concurrent-ruby` gem dependency [#4586]
+- Update `constantize` for batch callbacks. [#4469]
+- Add queue tag to `jobs.recovered.fetch` metric [#4594]
+- Refactor Pro's fetch infrastructure [#4602]
 
 5.0.1
 ---------
