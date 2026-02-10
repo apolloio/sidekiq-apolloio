@@ -10,12 +10,11 @@ require "sidekiq/web/helpers"
 require "sidekiq/web/router"
 require "sidekiq/web/action"
 require "sidekiq/web/application"
+require "sidekiq/web/csrf_protection"
 
-require "rack/protection"
-
+require "rack/content_length"
 require "rack/builder"
-require "rack/file"
-require "rack/session/cookie"
+require "rack/static"
 
 module Sidekiq
   class Web
@@ -34,17 +33,13 @@ module Sidekiq
       "Dead" => "morgue"
     }
 
+    if ENV["SIDEKIQ_METRICS_BETA"] == "1"
+      DEFAULT_TABS["Metrics"] = "metrics"
+    end
+
     class << self
       def settings
         self
-      end
-
-      def middlewares
-        @middlewares ||= []
-      end
-
-      def use(*middleware_args, &block)
-        middlewares << [middleware_args, block]
       end
 
       def default_tabs
@@ -72,32 +67,45 @@ module Sidekiq
         opts.each { |key| set(key, false) }
       end
 
-      # Helper for the Sinatra syntax: Sidekiq::Web.set(:session_secret, Rails.application.secrets...)
+      def middlewares
+        @middlewares ||= []
+      end
+
+      def use(*args, &block)
+        middlewares << [args, block]
+      end
+
       def set(attribute, value)
         send(:"#{attribute}=", value)
       end
 
-      attr_accessor :app_url, :session_secret, :redis_pool, :sessions
+      def sessions=(val)
+        puts "WARNING: Sidekiq::Web.sessions= is no longer relevant and will be removed in Sidekiq 7.0. #{caller(1..1).first}"
+      end
+
+      def session_secret=(val)
+        puts "WARNING: Sidekiq::Web.session_secret= is no longer relevant and will be removed in Sidekiq 7.0. #{caller(1..1).first}"
+      end
+
+      attr_accessor :app_url, :redis_pool
       attr_writer :locales, :views
     end
 
     def self.inherited(child)
       child.app_url = app_url
-      child.session_secret = session_secret
       child.redis_pool = redis_pool
-      child.sessions = sessions
     end
 
     def settings
       self.class.settings
     end
 
-    def use(*middleware_args, &block)
-      middlewares << [middleware_args, block]
+    def middlewares
+      @middlewares ||= self.class.middlewares
     end
 
-    def middlewares
-      @middlewares ||= Web.middlewares.dup
+    def use(*args, &block)
+      middlewares << [args, block]
     end
 
     def call(env)
@@ -125,18 +133,8 @@ module Sidekiq
       send(:"#{attribute}=", value)
     end
 
-    # Default values
-    set :sessions, true
-
-    attr_writer :sessions
-
-    def sessions
-      unless instance_variable_defined?("@sessions")
-        @sessions = self.class.sessions
-        @sessions = @sessions.to_hash.dup if @sessions.respond_to?(:to_hash)
-      end
-
-      @sessions
+    def sessions=(val)
+      puts "Sidekiq::Web#sessions= is no longer relevant and will be removed in Sidekiq 7.0. #{caller[2..2].first}"
     end
 
     def self.register(extension)
@@ -145,50 +143,20 @@ module Sidekiq
 
     private
 
-    def using?(middleware)
-      middlewares.any? do |(m, _)|
-        m.is_a?(Array) && (m[0] == middleware || m[0].is_a?(middleware))
-      end
-    end
-
-    def build_sessions
-      middlewares = self.middlewares
-
-      unless using?(::Rack::Protection) || ENV["RACK_ENV"] == "test"
-        middlewares.unshift [[::Rack::Protection, {use: :authenticity_token}], nil]
-      end
-
-      s = sessions
-      return unless s
-
-      unless using? ::Rack::Session::Cookie
-        unless (secret = Web.session_secret)
-          require "securerandom"
-          secret = SecureRandom.hex(64)
-        end
-
-        options = {secret: secret}
-        options = options.merge(s.to_hash) if s.respond_to? :to_hash
-
-        middlewares.unshift [[::Rack::Session::Cookie, options], nil]
-      end
-    end
-
     def build
-      build_sessions
-
-      middlewares = self.middlewares
       klass = self.class
+      m = middlewares
+
+      rules = []
+      rules = [[:all, {"cache-control" => "public, max-age=86400"}]] unless ENV["SIDEKIQ_WEB_TESTING"]
 
       ::Rack::Builder.new do
-        %w[stylesheets javascripts images].each do |asset_dir|
-          map "/#{asset_dir}" do
-            run ::Rack::File.new("#{ASSETS}/#{asset_dir}", {"Cache-Control" => "public, max-age=86400"})
-          end
-        end
-
-        middlewares.each { |middleware, block| use(*middleware, &block) }
-
+        use Rack::Static, urls: ["/stylesheets", "/images", "/javascripts"],
+          root: ASSETS,
+          cascade: true,
+          header_rules: rules
+        m.each { |middleware, block| use(*middleware, &block) }
+        use Sidekiq::Web::CsrfProtection unless $TESTING
         run WebApplication.new(klass)
       end
     end

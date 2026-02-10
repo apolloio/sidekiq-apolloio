@@ -15,7 +15,7 @@
   <% @count = (params['per_page'] || 20).to_i %>
   <% @current_page = (params['page'] || 1).to_i %>
   <% @total_size = @queues.size %>
-  <table class="queues table table-hover table-bordered table-striped table-white">
+  <table class="queues table table-hover table-bordered table-striped">
     <thead>
       <th><%= t('Queue') %></th>
       <th><%= t('Size') %></th>

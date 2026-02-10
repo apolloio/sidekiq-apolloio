@@ -10,15 +10,22 @@ module Sidekiq
   module WebHelpers
     def strings(lang)
       @strings ||= {}
-      @strings[lang] ||= begin
-        # Allow sidekiq-web extensions to add locale paths
-        # so extensions can be localized
-        settings.locales.each_with_object({}) do |path, global|
-          find_locale_files(lang).each do |file|
-            strs = YAML.load(File.open(file))
-            global.merge!(strs[lang])
-          end
+
+      # Allow sidekiq-web extensions to add locale paths
+      # so extensions can be localized
+      @strings[lang] ||= settings.locales.each_with_object({}) do |path, global|
+        find_locale_files(lang).each do |file|
+          strs = YAML.safe_load(File.open(file))
+          global.merge!(strs[lang])
         end
+      end
+    end
+
+    def singularize(str, count)
+      if count == 1 && str.respond_to?(:singularize) # rails
+        str.singularize
+      else
+        str
       end
     end
 
@@ -61,17 +68,6 @@ module Sidekiq
 
     def display_custom_head
       @head_html.join if defined?(@head_html)
-    end
-
-    def poll_path
-      if current_path != "" && params["poll"]
-        path = root_path + current_path
-        query_string = to_query_string(params.slice(*params.keys - %w[page poll]))
-        path += "?#{query_string}" unless query_string.empty?
-        path
-      else
-        ""
-      end
     end
 
     def text_direction
@@ -118,7 +114,7 @@ module Sidekiq
     # within is used by Sidekiq Pro
     def display_tags(job, within = nil)
       job.tags.map { |tag|
-        "<span class='jobtag label label-info'>#{::Rack::Utils.escape_html(tag)}</span>"
+        "<span class='label label-info jobtag'>#{::Rack::Utils.escape_html(tag)}</span>"
       }.join(" ")
     end
 
@@ -141,15 +137,28 @@ module Sidekiq
     end
 
     def sort_direction_label
-      params[:direction] == "asc" ? "&uarr;" : "&darr;"
+      (params[:direction] == "asc") ? "&uarr;" : "&darr;"
     end
 
-    def workers
-      @workers ||= Sidekiq::Workers.new
+    def workset
+      @work ||= Sidekiq::WorkSet.new
     end
 
     def processes
       @processes ||= Sidekiq::ProcessSet.new
+    end
+
+    # Sorts processes by hostname following the natural sort order
+    def sorted_processes
+      @sorted_processes ||= begin
+        return processes unless processes.all? { |p| p["hostname"] }
+
+        processes.to_a.sort_by do |process|
+          # Kudos to `shurikk` on StackOverflow
+          # https://stackoverflow.com/a/15170063/575547
+          process["hostname"].split(/(\d+)/).map { |a| /\d+/.match?(a) ? a.to_i : a }
+        end
+      end
     end
 
     def stats
@@ -158,8 +167,7 @@ module Sidekiq
 
     def redis_connection
       Sidekiq.redis do |conn|
-        c = conn.connection
-        "redis://#{c[:location]}/#{c[:db]}"
+        conn.connection[:id]
       end
     end
 
@@ -180,7 +188,7 @@ module Sidekiq
     end
 
     def current_status
-      workers.size == 0 ? "idle" : "active"
+      (workset.size == 0) ? "idle" : "active"
     end
 
     def relative_time(time)
@@ -197,16 +205,13 @@ module Sidekiq
       [score.to_f, jid]
     end
 
-    SAFE_QPARAMS = %w[page poll direction]
+    SAFE_QPARAMS = %w[page direction]
 
     # Merge options with current params, filter safe params, and stringify to query string
     def qparams(options)
-      # stringify
-      options.keys.each do |key|
-        options[key.to_s] = options.delete(key)
-      end
+      stringified_options = options.transform_keys(&:to_s)
 
-      to_query_string(params.merge(options))
+      to_query_string(params.merge(stringified_options))
     end
 
     def to_query_string(params)
@@ -216,7 +221,7 @@ module Sidekiq
     end
 
     def truncate(text, truncate_after_chars = 2000)
-      truncate_after_chars && text.size > truncate_after_chars ? "#{text[0..truncate_after_chars]}..." : text
+      (truncate_after_chars && text.size > truncate_after_chars) ? "#{text[0..truncate_after_chars]}..." : text
     end
 
     def display_args(args, truncate_after_chars = 2000)
@@ -233,7 +238,7 @@ module Sidekiq
     end
 
     def csrf_tag
-      "<input type='hidden' name='authenticity_token' value='#{session[:csrf]}'/>"
+      "<input type='hidden' name='authenticity_token' value='#{env[:csrf_token]}'/>"
     end
 
     def to_display(arg)
@@ -250,7 +255,7 @@ module Sidekiq
       queue class args retry_count retried_at failed_at
       jid error_message error_class backtrace
       error_backtrace enqueued_at retry wrapped
-      created_at tags
+      created_at tags display_class
     ])
 
     def retry_extra_items(retry_job)
@@ -261,7 +266,21 @@ module Sidekiq
       end
     end
 
+    def format_memory(rss_kb)
+      return "0" if rss_kb.nil? || rss_kb == 0
+
+      if rss_kb < 100_000
+        "#{number_with_delimiter(rss_kb)} KB"
+      elsif rss_kb < 10_000_000
+        "#{number_with_delimiter((rss_kb / 1024.0).to_i)} MB"
+      else
+        "#{number_with_delimiter((rss_kb / (1024.0 * 1024.0)).round(1))} GB"
+      end
+    end
+
     def number_with_delimiter(number)
+      return "" if number.nil?
+
       begin
         Float(number)
       rescue ArgumentError, TypeError
@@ -295,7 +314,7 @@ module Sidekiq
     end
 
     def environment_title_prefix
-      environment = Sidekiq.options[:environment] || ENV["APP_ENV"] || ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
+      environment = Sidekiq[:environment] || ENV["APP_ENV"] || ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
 
       "[#{environment.upcase}] " unless environment == "production"
     end

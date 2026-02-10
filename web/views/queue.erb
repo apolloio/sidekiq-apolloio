@@ -51,33 +51,37 @@
       <th><a href="<%= url %>?direction=<%= params[:direction] == 'asc' ? 'desc' : 'asc' %>"># <%= sort_direction_label %></a></th>
       <th><%= t('Job') %></th>
       <th><%= t('Arguments') %></th>
+      <th><%= t('Context') %></th>
       <th></th>
     </thead>
-    <% @messages.each_with_index do |msg, index| %>
-      <tr>
+    <% @jobs.each_with_index do |job, index| %>
+      <tr title="<%= job.jid %>">
         <% if params[:direction] == 'asc' %>
           <td><%= @count * (@current_page - 1) + index + 1 %></td>
         <% else %>
           <td><%= @total_size - (@count * (@current_page - 1) + index) %></td>
         <% end %>
         <td>
-          <%= h(msg.display_class) %>
-          <%= display_tags(msg, nil) %>
+          <%= h(job.display_class) %>
+          <%= display_tags(job, nil) %>
         </td>
         <td>
-          <% a = msg.display_args %>
+          <% a = job.display_args %>
           <% if a.inspect.size > 100 %>
-            <span class="worker_<%= index %>"><%= h(a.inspect[0..100]) + "... " %></span>
-            <button data-toggle="collapse" data-target=".worker_<%= index %>" class="btn btn-default btn-xs"><%= t('ShowAll') %></button>
-            <div class="toggle worker_<%= index %>"><%= display_args(a) %></div>
+            <span id="job_<%= index %>"><%= h(a.inspect[0..100]) + "... " %></span>
+            <button data-toggle="job_<%= index %>_full" class="btn btn-default btn-xs"><%= t('ShowAll') %></button>
+            <div class="toggle" id="job_<%= index %>_full"><%= display_args(a) %></div>
           <% else %>
-            <%= display_args(msg.display_args) %>
+            <%= display_args(job.display_args) %>
           <% end %>
+        </td>
+        <td>
+          <%= h(job["cattr"].inspect) if job["cattr"]&.any? %>
         </td>
         <td>
           <form action="<%= root_path %>queues/<%= CGI.escape(@name) %>/delete" method="post">
             <%= csrf_tag %>
-            <input name="key_val" value="<%= h msg.value %>" type="hidden" />
+            <input name="key_val" value="<%= h job.value %>" type="hidden" />
             <input class="btn btn-danger btn-xs" type="submit" name="delete" value="<%= t('Delete') %>" data-confirm="<%= t('AreYouSure') %>" />
           </form>
         </td>
@@ -85,4 +89,4 @@
     <% end %>
   </table>
 </div>
-<%= erb :_paging, locals: { url: "#{root_path}queues/#{@name}" } %>
+<%= erb :_paging, locals: { url: "#{root_path}queues/#{CGI.escape(@name)}" } %>

@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "sidekiq/util"
 require "sidekiq/processor"
 require "sidekiq/fetch"
 require "set"
@@ -21,42 +20,36 @@ module Sidekiq
   # the shutdown process.  The other tasks are performed by other threads.
   #
   class Manager
-    include Util
+    include Sidekiq::Component
 
     attr_reader :workers
-    attr_reader :options
 
     def initialize(options = {})
+      @config = options
       logger.debug { options.inspect }
-      @options = options
       @count = options[:concurrency] || 10
       raise ArgumentError, "Concurrency of #{@count} is not supported" if @count < 1
 
       @done = false
       @workers = Set.new
       @count.times do
-        @workers << Processor.new(self)
+        @workers << Processor.new(@config, &method(:processor_result))
       end
       @plock = Mutex.new
     end
 
     def start
-      @workers.each do |x|
-        x.start
-      end
+      @workers.each(&:start)
     end
 
     def quiet
       return if @done
       @done = true
 
-      logger.info { "Terminating quiet workers" }
-      @workers.each { |x| x.terminate }
+      logger.info { "Terminating quiet threads" }
+      @workers.each(&:terminate)
       fire_event(:quiet, reverse: true)
     end
-
-    # hack for quicker development / testing environment #2774
-    PAUSE_TIME = STDOUT.tty? ? 0.1 : 0.5
 
     def stop(deadline)
       quiet
@@ -68,29 +61,18 @@ module Sidekiq
       sleep PAUSE_TIME
       return if @workers.empty?
 
-      logger.info { "Pausing to allow workers to finish..." }
-      remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
-      while remaining > PAUSE_TIME
-        return if @workers.empty?
-        sleep PAUSE_TIME
-        remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
-      end
+      logger.info { "Pausing to allow jobs to finish..." }
+      wait_for(deadline) { @workers.empty? }
       return if @workers.empty?
 
       hard_shutdown
     end
 
-    def processor_stopped(processor)
-      @plock.synchronize do
-        @workers.delete(processor)
-      end
-    end
-
-    def processor_died(processor, reason)
+    def processor_result(processor, reason = nil)
       @plock.synchronize do
         @workers.delete(processor)
         unless @done
-          p = Processor.new(self)
+          p = Processor.new(@config, &method(:processor_result))
           @workers << p
           p.start
         end
@@ -104,7 +86,7 @@ module Sidekiq
     private
 
     def hard_shutdown
-      # We've reached the timeout and we still have busy workers.
+      # We've reached the timeout and we still have busy threads.
       # They must die but their jobs shall live on.
       cleanup = nil
       @plock.synchronize do
@@ -114,21 +96,40 @@ module Sidekiq
       if cleanup.size > 0
         jobs = cleanup.map { |p| p.job }.compact
 
-        logger.warn { "Terminating #{cleanup.size} busy worker threads" }
-        logger.warn { "Work still in progress #{jobs.inspect}" }
+        logger.warn { "Terminating #{cleanup.size} busy threads" }
+        logger.debug { "Jobs still in progress #{jobs.inspect}" }
 
         # Re-enqueue unfinished jobs
         # NOTE: You may notice that we may push a job back to redis before
-        # the worker thread is terminated. This is ok because Sidekiq's
+        # the thread is terminated. This is ok because Sidekiq's
         # contract says that jobs are run AT LEAST once. Process termination
         # is delayed until we're certain the jobs are back in Redis because
         # it is worse to lose a job than to run it twice.
-        strategy = (@options[:fetch] || Sidekiq::BasicFetch)
-        strategy.bulk_requeue(jobs, @options)
+        strategy = @config[:fetch]
+        strategy.bulk_requeue(jobs, @config)
       end
 
       cleanup.each do |processor|
         processor.kill
+      end
+
+      # when this method returns, we immediately call `exit` which may not give
+      # the remaining threads time to run `ensure` blocks, etc. We pause here up
+      # to 3 seconds to give threads a minimal amount of time to run `ensure` blocks.
+      deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + 3
+      wait_for(deadline) { @workers.empty? }
+    end
+
+    # hack for quicker development / testing environment #2774
+    PAUSE_TIME = $stdout.tty? ? 0.1 : 0.5
+
+    # Wait for the orblock to be true or the deadline passed.
+    def wait_for(deadline, &condblock)
+      remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
+      while remaining > PAUSE_TIME
+        return if condblock.call
+        sleep PAUSE_TIME
+        remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
       end
     end
   end

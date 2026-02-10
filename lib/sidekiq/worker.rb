@@ -9,6 +9,7 @@ module Sidekiq
   #
   #   class HardWorker
   #     include Sidekiq::Worker
+  #     sidekiq_options queue: 'critical', retry: 5
   #
   #     def perform(*args)
   #       # do some work
@@ -20,6 +21,26 @@ module Sidekiq
   #   HardWorker.perform_async(1, 2, 3)
   #
   # Note that perform_async is a class method, perform is an instance method.
+  #
+  # Sidekiq::Worker also includes several APIs to provide compatibility with
+  # ActiveJob.
+  #
+  #   class SomeWorker
+  #     include Sidekiq::Worker
+  #     queue_as :critical
+  #
+  #     def perform(...)
+  #     end
+  #   end
+  #
+  #   SomeWorker.set(wait_until: 1.hour).perform_async(123)
+  #
+  # Note that arguments passed to the job must still obey Sidekiq's
+  # best practice for simple, JSON-native data types. Sidekiq will not
+  # implement ActiveJob's more complex argument serialization. For
+  # this reason, we don't implement `perform_later` as our call semantics
+  # are very different.
+  #
   module Worker
     ##
     # The Options module is extracted so we can include it in ActiveJob::Base
@@ -61,7 +82,7 @@ module Sidekiq
         end
 
         def get_sidekiq_options # :nodoc:
-          self.sidekiq_options_hash ||= Sidekiq.default_worker_options
+          self.sidekiq_options_hash ||= Sidekiq.default_job_options
         end
 
         def sidekiq_class_attribute(*attrs)
@@ -150,33 +171,97 @@ module Sidekiq
     #     SomeWorker.set(queue: 'foo').perform_async(....)
     #
     class Setter
+      include Sidekiq::JobUtil
+
       def initialize(klass, opts)
         @klass = klass
-        @opts = opts
+        # NB: the internal hash always has stringified keys
+        @opts = opts.transform_keys(&:to_s)
+
+        # ActiveJob compatibility
+        interval = @opts.delete("wait_until") || @opts.delete("wait")
+        at(interval) if interval
       end
 
       def set(options)
-        @opts.merge!(options)
+        hash = options.transform_keys(&:to_s)
+        interval = hash.delete("wait_until") || @opts.delete("wait")
+        @opts.merge!(hash)
+        at(interval) if interval
         self
       end
 
       def perform_async(*args)
-        @klass.client_push(@opts.merge("args" => args, "class" => @klass))
+        if @opts["sync"] == true
+          perform_inline(*args)
+        else
+          @klass.client_push(@opts.merge("args" => args, "class" => @klass))
+        end
+      end
+
+      # Explicit inline execution of a job. Returns nil if the job did not
+      # execute, true otherwise.
+      def perform_inline(*args)
+        raw = @opts.merge("args" => args, "class" => @klass)
+
+        # validate and normalize payload
+        item = normalize_item(raw)
+        queue = item["queue"]
+
+        # run client-side middleware
+        result = Sidekiq.client_middleware.invoke(item["class"], item, queue, Sidekiq.redis_pool) do
+          item
+        end
+        return nil unless result
+
+        # round-trip the payload via JSON
+        msg = Sidekiq.load_json(Sidekiq.dump_json(item))
+
+        # prepare the job instance
+        klass = msg["class"].constantize
+        job = klass.new
+        job.jid = msg["jid"]
+        job.bid = msg["bid"] if job.respond_to?(:bid)
+
+        # run the job through server-side middleware
+        result = Sidekiq.server_middleware.invoke(job, msg, msg["queue"]) do
+          # perform it
+          job.perform(*msg["args"])
+          true
+        end
+        return nil unless result
+        # jobs do not return a result. they should store any
+        # modified state.
+        true
+      end
+      alias_method :perform_sync, :perform_inline
+
+      def perform_bulk(args, batch_size: 1_000)
+        client = @klass.build_client
+        result = args.each_slice(batch_size).flat_map do |slice|
+          client.push_bulk(@opts.merge("class" => @klass, "args" => slice))
+        end
+
+        result.is_a?(Enumerator::Lazy) ? result.force : result
       end
 
       # +interval+ must be a timestamp, numeric or something that acts
       #   numeric (like an activesupport time interval).
       def perform_in(interval, *args)
-        int = interval.to_f
-        now = Time.now.to_f
-        ts = (int < 1_000_000_000 ? now + int : int)
-
-        payload = @opts.merge("class" => @klass, "args" => args)
-        # Optimization to enqueue something now that is scheduled to go out now or in the past
-        payload["at"] = ts if ts > now
-        @klass.client_push(payload)
+        at(interval).perform_async(*args)
       end
       alias_method :perform_at, :perform_in
+
+      private
+
+      def at(interval)
+        int = interval.to_f
+        now = Time.now.to_f
+        ts = ((int < 1_000_000_000) ? now + int : int)
+        # Optimization to enqueue something now that is scheduled to go out now or in the past
+        @opts["at"] = ts if ts > now
+        self
+      end
     end
 
     module ClassMethods
@@ -192,12 +277,46 @@ module Sidekiq
         raise ArgumentError, "Do not call .delay_until on a Sidekiq::Worker class, call .perform_at"
       end
 
+      def queue_as(q)
+        sidekiq_options("queue" => q.to_s)
+      end
+
       def set(options)
         Setter.new(self, options)
       end
 
       def perform_async(*args)
-        client_push("class" => self, "args" => args)
+        Setter.new(self, {}).perform_async(*args)
+      end
+
+      # Inline execution of job's perform method after passing through Sidekiq.client_middleware and Sidekiq.server_middleware
+      def perform_inline(*args)
+        Setter.new(self, {}).perform_inline(*args)
+      end
+      alias_method :perform_sync, :perform_inline
+
+      ##
+      # Push a large number of jobs to Redis, while limiting the batch of
+      # each job payload to 1,000. This method helps cut down on the number
+      # of round trips to Redis, which can increase the performance of enqueueing
+      # large numbers of jobs.
+      #
+      # +items+ must be an Array of Arrays.
+      #
+      # For finer-grained control, use `Sidekiq::Client.push_bulk` directly.
+      #
+      # Example (3 Redis round trips):
+      #
+      #     SomeWorker.perform_async(1)
+      #     SomeWorker.perform_async(2)
+      #     SomeWorker.perform_async(3)
+      #
+      # Would instead become (1 Redis round trip):
+      #
+      #     SomeWorker.perform_bulk([[1], [2], [3]])
+      #
+      def perform_bulk(*args, **kwargs)
+        Setter.new(self, {}).perform_bulk(*args, **kwargs)
       end
 
       # +interval+ must be a timestamp, numeric or something that acts
@@ -205,7 +324,7 @@ module Sidekiq
       def perform_in(interval, *args)
         int = interval.to_f
         now = Time.now.to_f
-        ts = (int < 1_000_000_000 ? now + int : int)
+        ts = ((int < 1_000_000_000) ? now + int : int)
 
         item = {"class" => self, "args" => args}
 
@@ -221,7 +340,7 @@ module Sidekiq
       # Legal options:
       #
       #   queue - use a named queue for this Worker, default 'default'
-      #   retry - enable the RetryJobs middleware for this Worker, *true* to use the default
+      #   retry - enable retries via JobRetry, *true* to use the default
       #      or *Integer* count
       #   backtrace - whether to save any error backtrace in the retry payload to display in web UI,
       #      can be true, false or an integer number of lines to save, default *false*
@@ -229,18 +348,22 @@ module Sidekiq
       #
       # In practice, any option is allowed.  This is the main mechanism to configure the
       # options for a specific job.
+      #
+      # These options will be saved into the serialized job when enqueued by
+      # the client.
       def sidekiq_options(opts = {})
         super
       end
 
       def client_push(item) # :nodoc:
-        pool = Thread.current[:sidekiq_via_pool] || get_sidekiq_options["pool"] || Sidekiq.redis_pool
-        # stringify
-        item.keys.each do |key|
-          item[key.to_s] = item.delete(key)
-        end
+        raise ArgumentError, "Job payloads should contain no Symbols: #{item}" if item.any? { |k, v| k.is_a?(::Symbol) }
+        build_client.push(item)
+      end
 
-        Sidekiq::Client.new(pool).push(item)
+      def build_client # :nodoc:
+        pool = Thread.current[:sidekiq_via_pool] || get_sidekiq_options["pool"] || Sidekiq.redis_pool
+        client_class = get_sidekiq_options["client_class"] || Sidekiq::Client
+        client_class.new(pool)
       end
     end
   end

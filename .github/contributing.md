@@ -17,6 +17,84 @@ fix or new functionality.  Functionality must meet my design goals and
 vision for the project to be accepted; I would be happy to discuss how
 your idea can best fit into Sidekiq.
 
+### Local development setup
+
+You need Redis installed and a Ruby version that fulfills the requirements in
+`sidekiq.gemspec`. Then:
+
+```
+bundle install
+```
+
+And in order to run the tests and linter checks:
+
+```
+bundle exec rake
+```
+
+### Beginner's Guide to Local Development Setup
+
+#### 1. Fork [mperham/sidekiq](https://github.com/mperham/sidekiq) project repository to your personal GitHub account
+
+#### 2. Click 'Clone or Download' button in personal sidekiq repository and copy HTTPS URL
+
+#### 3. On local machine, clone repository
+
+```
+git clone HTTPS-URL-FOR-PERSONAL-SIDEKIQ-REPOSITORY
+```
+
+#### 4. Navigate to your local machine's sidekiq directory
+
+```
+cd sidekiq/
+```
+
+#### 5. Set remote upstream branch
+
+```
+git remote add upstream https://github.com/mperham/sidekiq.git
+```
+
+#### 6. Install necessary gems for development and start Redis server
+
+```
+bundle install
+```
+
+```
+redis-server
+```
+
+#### 7. Navigate to myapp (small Rails app inside Sidekiq repository used for development)
+
+```
+cd myapp/
+```
+
+#### 8. Run required migration in order to launch Rails app
+
+```
+rake db:migrate
+```
+
+#### 9. Launch Rails app
+
+```
+rails s
+```
+
+#### 10. Create feature branch and start contributing!
+
+```
+git checkout -b new_feature_name
+```
+
+### 11. Keep your forked branch up to date with changes in main repo
+```
+git pull upstream main
+```
+
 ## Legal
 
 By submitting a Pull Request, you disavow any rights or claims to any changes

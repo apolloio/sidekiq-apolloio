@@ -6,14 +6,19 @@ require "time"
 module Sidekiq
   module Context
     def self.with(hash)
+      orig_context = current.dup
       current.merge!(hash)
       yield
     ensure
-      hash.each_key { |key| current.delete(key) }
+      Thread.current[:sidekiq_context] = orig_context
     end
 
     def self.current
       Thread.current[:sidekiq_context] ||= {}
+    end
+
+    def self.add(k, v)
+      current[k] = v
     end
   end
 
@@ -30,24 +35,10 @@ module Sidekiq
       nil
     end
 
-    def debug?
-      level <= 0
-    end
-
-    def info?
-      level <= 1
-    end
-
-    def warn?
-      level <= 2
-    end
-
-    def error?
-      level <= 3
-    end
-
-    def fatal?
-      level <= 4
+    LEVELS.each do |level, numeric_level|
+      define_method("#{level}?") do
+        local_level.nil? ? super() : local_level <= numeric_level
+      end
     end
 
     def local_level
@@ -89,7 +80,7 @@ module Sidekiq
       return true if @logdev.nil? || severity < level
 
       if message.nil?
-        if block_given?
+        if block
           message = yield
         else
           message = progname

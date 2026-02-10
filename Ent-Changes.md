@@ -1,8 +1,111 @@
 # Sidekiq Enterprise Changelog
 
-[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/main/Ent-Changes.md)
 
-Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
+Please see [sidekiq.org](https://sidekiq.org) for more details and how to buy.
+
+2.5.3
+---------
+
+- Adjust rate limiters to lazy initialize, avoiding connection issues
+when forking preloaded app code [#5535]
+
+2.5.2
+---------
+
+- Remove Redis 4.8.0 deprecation warnings
+
+2.5.1
+-------------
+
+- Fix crash with empty periodic data [#5374]
+
+2.5.0
+-------------
+
+- Per the 2.0 upgrade notes, Sidekiq Enterprise will stop if you do not have valid
+  credentials configured on startup.
+- Internal refactoring for Sidekiq 6.5.
+- Requires Sidekiq 6.5, Pro 5.5.
+
+2.3.1
+-------------
+
+- Fix multi/pipe deprecation in redis-rb 4.6
+- Leader now elects more often, to minimize missed cron jobs
+- Fix periodic jobs missing the "fallback" hour during DST changeover [#5049]
+
+2.3.0
+-------------
+
+- Remove jQuery usage in UI tabs
+- Pass exception to rate limiter backoff proc [#5024]
+
+2.2.3
+-------------
+
+- Fixes for leaky and unlimited limiters [#4809, #4869]
+- Invalid leaders now immediately step down [#4950]
+- Web UI now displays "next run time" in the specified timezone [#4833]
+- Fix swarm memory monitoring on BSDs
+
+2.2.2
+-------------
+
+- Periodic job timezone fix [#4796]
+
+2.2.1
+-------------
+
+- Support configurable timezones for periodic jobs [#4749]
+- Handle edge case leading to negative expiry in uniqueness [#4763]
+
+2.2.0
+-------------
+
+- Add new **leaky bucket** rate limiter [#4414]
+  This allows clients to burst up to X calls before throttling
+  back to X calls per Y seconds. To limit the user to 60 calls
+  per minute:
+```ruby
+leaker = Sidekiq::Limiter.leaky("shopify", 60, :minute)
+leaker.within_limit do
+  ...
+end
+```
+  See the Rate Limiting wiki page for more detail.
+- Rate limiters may now customize their reschedule count [#4725]
+  To disable rate limit reschedules, use `reschedule: 0`.
+```ruby
+Sidekiq::Limiter.concurrent("somename", 5, reschedule: 0)
+```
+- Allow filtering by name in the Rate Limiter UI [#4695]
+- Add IT locale
+
+2.1.2
+-------------
+
+- The Sidekiq Pro and Enterprise gem servers now `bundle install` much faster with **Bundler 2.2+** [#4158]
+- Now that ActiveJobs support `sidekiq_options`, add support for uniqueness in AJs [#4667]
+
+2.1.1
+-------------
+
+- Add optional **app preload** in swarm, saves even more memory [#4646]
+- Fix incorrect queue tags in historical metrics [#4377]
+
+2.1.0
+-------------
+
+- Move historical metrics to use tags rather than interpolating name [#4377]
+```
+sidekiq.enqueued.#{name} -> sidekiq.queue.size with tag queue:#{name}
+sidekiq.latency.#{name} -> sidekiq.queue.latency with tag queue:#{name}
+```
+- Remove `concurrent-ruby` gem dependency [#4586]
+- Add systemd `Type=notify` support for swarm [#4511]
+- Length swarm's boot timeout to 60 sec [#4544]
+- Add NL locale
 
 2.0.1
 -------------

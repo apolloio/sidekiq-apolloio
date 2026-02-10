@@ -2,11 +2,7 @@ Sidekiq
 ==============
 
 [![Gem Version](https://badge.fury.io/rb/sidekiq.svg)](https://rubygems.org/gems/sidekiq)
-[![Code Climate](https://codeclimate.com/github/mperham/sidekiq.svg)](https://codeclimate.com/github/mperham/sidekiq)
-[![Test Coverage](https://codeclimate.com/github/mperham/sidekiq/badges/coverage.svg)](https://codeclimate.com/github/mperham/sidekiq/coverage)
-[![Build Status](https://circleci.com/gh/mperham/sidekiq/tree/master.svg?style=svg)](https://circleci.com/gh/mperham/sidekiq/tree/master)
-[![Gitter Chat](https://badges.gitter.im/mperham/sidekiq.svg)](https://gitter.im/mperham/sidekiq)
-
+![Build](https://github.com/mperham/sidekiq/workflows/CI/badge.svg)
 
 Simple, efficient background processing for Ruby.
 
@@ -40,17 +36,17 @@ Sidekiq 6.0 supports Rails 5.0+ but does not require it.
 Installation
 -----------------
 
-    gem install sidekiq
+    bundle add sidekiq
 
 
 Getting Started
 -----------------
 
 See the [Getting Started wiki page](https://github.com/mperham/sidekiq/wiki/Getting-Started) and follow the simple setup process.
-You can watch [this Youtube playlist](https://www.youtube.com/playlist?list=PLjeHh2LSCFrWGT5uVjUuFKAcrcj5kSai1) to learn all about
+You can watch [this YouTube playlist](https://www.youtube.com/playlist?list=PLjeHh2LSCFrWGT5uVjUuFKAcrcj5kSai1) to learn all about
 Sidekiq and see its features in action.  Here's the Web UI:
 
-![Web UI](https://github.com/mperham/sidekiq/raw/master/examples/web-ui.png)
+![Web UI](https://github.com/mperham/sidekiq/raw/main/examples/web-ui.png)
 
 
 Want to Upgrade?
@@ -84,14 +80,19 @@ Useful resources:
 Every Friday morning is Sidekiq happy hour: I video chat and answer questions.
 See the [Sidekiq support page](https://sidekiq.org/support.html) for details.
 
+Contributing
+-----------------
+
+Please see [the contributing guidelines](https://github.com/mperham/sidekiq/blob/main/.github/contributing.md).
+
 
 License
 -----------------
 
-Please see [LICENSE](https://github.com/mperham/sidekiq/blob/master/LICENSE) for licensing details.
+Please see [LICENSE](https://github.com/mperham/sidekiq/blob/main/LICENSE) for licensing details.
 
 
 Author
 -----------------
 
-Mike Perham, [@mperham@mastodon.xyz](https://mastodon.xyz/@mperham) / [@sidekiq](https://twitter.com/sidekiq), [https://www.mikeperham.com](https://www.mikeperham.com) / [https://www.contribsys.com](https://www.contribsys.com)
+Mike Perham, [@getajobmike](https://twitter.com/getajobmike) / [@sidekiq](https://twitter.com/sidekiq), [https://www.mikeperham.com](https://www.mikeperham.com) / [https://www.contribsys.com](https://www.contribsys.com)
