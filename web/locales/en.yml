@@ -5,6 +5,8 @@ en:
   AreYouSure: Are you sure?
   AreYouSureDeleteJob: Are you sure you want to delete this job?
   AreYouSureDeleteQueue: Are you sure you want to delete the %{queue} queue? This will delete all jobs within the queue, it will reappear if you push more jobs to it in the future.
+  AreYouSureNonWorkHourQueue: Are you sure? This will pause the %{queue} queue and will execute the jobs only during non-work hours!
+  AreYouSureUnpauseNonWorkHourQueue: "Running an intensive job during work-hours may have real production consequence on performance. It is not uncommon for such jobs to hammer our database and slow down the website. Please seek approval from Ray or the #squad-platform before you do this."
   Arguments: Arguments
   BackToApp: Back to App
   Busy: Busy
@@ -86,6 +88,8 @@ en:
   ThreeMonths: 3 months
   Time: Time
   Unpause: Unpause
+  StartExecution: Run all hours
+  PauseTillNonWorkHours: Run non-work hours
   Uptime: Uptime (days)
   Utilization: Utilization
   Version: Version

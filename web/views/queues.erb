@@ -3,22 +3,37 @@
 </div>
 
 <div class="table_container">
+  <style>
+    .btn-warning {
+      color: #fff !important;
+      background-color: #cc8015 !important;
+      border-color: #eea236 !important;
+      background-image: none !important;
+    }
+
+    .label-warning {
+      background-color: #cc8015 !important;
+    }
+  </style>
+  <% @count = (params['per_page'] || 20).to_i %>
+  <% @current_page = (params['page'] || 1).to_i %>
+  <% @total_size = @queues.size %>
   <table class="queues table table-hover table-bordered table-striped">
     <thead>
       <th><%= t('Queue') %></th>
       <th><%= t('Size') %></th>
       <th><%= t('Latency') %></th>
-      <th><%= t('Actions') %></th>
+      <th class="col-md-3"><%= t('Actions') %></th>
     </thead>
-    <% @count = (params['per_page'] || 20).to_i %>
-    <% @current_page = (params['page'] || 1).to_i %>
-    <% @total_size = @queues.size %>
     <% @queues.sort_by(&:name).each_slice(@count).to_a[@current_page - 1]&.each do |queue| %>
       <tr>
         <td>
           <a href="<%= root_path %>queues/<%= CGI.escape(queue.name) %>"><%= h queue.name %></a>
           <% if queue.paused? %>
-            <span class="label label-danger"><%= t('Paused') %></span>
+            <span class="label label-warning"><%= t('Paused') %></span>
+          <% end %>
+          <% if queue.is_non_work_hour_only? %>
+            <span class="label label-danger">Non-work hours only</span>
           <% end %>
         </td>
         <td class="num"><%= number_with_delimiter(queue.size) %> </td>
@@ -28,17 +43,21 @@
           <%= number_with_delimiter(queue_latency, precision: 2) %>
         </td>
         <td class="delete-confirm">
-          <form action="<%=root_path %>queues/<%= CGI.escape(queue.name) %>" method="post">
+          <form action="<%= root_path %>queues/<%= CGI.escape(queue.name) %>" method="post">
             <%= csrf_tag %>
-            <input class="btn btn-danger" type="submit" name="delete" title="This will delete all jobs within the queue, it will reappear if you push more jobs to it in the future." value="<%= t('Delete') %>" data-confirm="<%= t('AreYouSureDeleteQueue', :queue => h(queue.name)) %>" />
-
-            <% if Sidekiq.pro? %>
+            <% if queue.is_non_work_hour_only? %>
+              <input class="btn btn-danger btn-xs" type="submit" name="unset_non_work_hour" value="<%= t('StartExecution') %>" data-confirm="<%= t('AreYouSureUnpauseNonWorkHourQueue', :queue => h(queue.name)) %>"/>
+            <% else %>
+              <input class="btn btn-danger btn-xs" type="submit" name="set_non_work_hour" value="<%= t('PauseTillNonWorkHours') %>" data-confirm="<%= t('AreYouSureNonWorkHourQueue', :queue => h(queue.name)) %>"/>
+            <% end %>
+            <% unless queue.is_non_work_hour_only? %>
               <% if queue.paused? %>
-                <input class="btn btn-danger" type="submit" name="unpause" value="<%= t('Unpause') %>" />
+                <input class="btn btn-warning btn-xs" type="submit" name="unpause" value="<%= t('Unpause') %>"/>
               <% else %>
-                <input class="btn btn-danger" type="submit" name="pause" value="<%= t('Pause') %>" />
+                <input class="btn btn-warning btn-xs" type="submit" name="pause" value="<%= t('Pause') %>"/>
               <% end %>
             <% end %>
+            <input class="btn btn-danger btn-xs" type="submit" name="delete" value="<%= t('Delete') %>" data-confirm="<%= t('AreYouSureDeleteQueue', :queue => h(queue.name)) %>"/>
           </form>
         </td>
       </tr>

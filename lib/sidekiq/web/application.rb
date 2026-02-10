@@ -134,8 +134,8 @@ module Sidekiq
 
       erb(:queue)
     end
-
-    post "/queues/:name" do
+    
+    post '/queues/:name' do
       queue = Sidekiq::Queue.new(route_params[:name])
 
       cookies = request.cookies || {}
