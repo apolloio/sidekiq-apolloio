@@ -27,7 +27,6 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 require "securerandom"
-require "base64"
 require "rack/request"
 
 module Sidekiq
@@ -57,12 +56,12 @@ module Sidekiq
       end
 
       def logger(env)
-        @logger ||= (env["rack.logger"] || ::Logger.new(env["rack.errors"]))
+        @logger ||= env["rack.logger"] || ::Logger.new(env["rack.errors"])
       end
 
       def deny(env)
         logger(env).warn "attack prevented by #{self.class}"
-        [403, {"Content-Type" => "text/plain"}, ["Forbidden"]]
+        [403, {Rack::CONTENT_TYPE => "text/plain"}, ["Forbidden"]]
       end
 
       def session(env)
@@ -116,7 +115,7 @@ module Sidekiq
         sess = session(env)
         localtoken = sess[:csrf]
 
-        # Checks that Rack::Session::Cookie actualy contains the csrf toekn
+        # Checks that Rack::Session::Cookie actually contains the csrf token
         return false if localtoken.nil?
 
         # Rotate the session token after every use
@@ -143,7 +142,7 @@ module Sidekiq
         one_time_pad = SecureRandom.random_bytes(token.length)
         encrypted_token = xor_byte_strings(one_time_pad, token)
         masked_token = one_time_pad + encrypted_token
-        Base64.urlsafe_encode64(masked_token)
+        encode_token(masked_token)
       end
 
       # Essentially the inverse of +mask_token+.
@@ -152,7 +151,7 @@ module Sidekiq
         # value and decrypt it
         token_length = masked_token.length / 2
         one_time_pad = masked_token[0...token_length]
-        encrypted_token = masked_token[token_length..-1]
+        encrypted_token = masked_token[token_length..]
         xor_byte_strings(one_time_pad, encrypted_token)
       end
 
@@ -168,8 +167,12 @@ module Sidekiq
         ::Rack::Utils.secure_compare(token.to_s, decode_token(local).to_s)
       end
 
+      def encode_token(token)
+        [token].pack("m0").tr("+/", "-_")
+      end
+
       def decode_token(token)
-        Base64.urlsafe_decode64(token)
+        token.tr("-_", "+/").unpack1("m0")
       end
 
       def xor_byte_strings(s1, s2)

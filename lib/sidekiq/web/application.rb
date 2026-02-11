@@ -5,7 +5,7 @@ module Sidekiq
     extend WebRouter
 
     REDIS_KEYS = %w[redis_version uptime_in_days connected_clients used_memory_human used_memory_peak_human]
-    CSP_HEADER = [
+    CSP_HEADER_TEMPLATE = [
       "default-src 'self' https: http:",
       "child-src 'self'",
       "connect-src 'self' https: http: wss: ws:",
@@ -15,11 +15,17 @@ module Sidekiq
       "manifest-src 'self'",
       "media-src 'self'",
       "object-src 'none'",
-      "script-src 'self' https: http: 'unsafe-inline'",
-      "style-src 'self' https: http: 'unsafe-inline'",
+      "script-src 'self' 'nonce-!placeholder!'",
+      "style-src 'self' https: http: 'unsafe-inline'", # TODO Nonce in 8.0
       "worker-src 'self'",
       "base-uri 'self'"
     ].join("; ").freeze
+    METRICS_PERIODS = {
+      "1h" => 60,
+      "2h" => 120,
+      "4h" => 240,
+      "8h" => 480
+    }
 
     def initialize(klass)
       @klass = klass
@@ -43,13 +49,13 @@ module Sidekiq
 
     head "/" do
       # HEAD / is the cheapest heartbeat possible,
-      # it hits Redis to ensure connectivity
-      Sidekiq.redis { |c| c.llen("queue:default") }
-      ""
+      # it hits Redis to ensure connectivity and returns
+      # the size of the default queue
+      Sidekiq.redis { |c| c.llen("queue:default") }.to_s
     end
 
     get "/" do
-      @redis_info = redis_info.select { |k, v| REDIS_KEYS.include? k }
+      @redis_info = redis_info.slice(*REDIS_KEYS)
       days = (params["days"] || 30).to_i
       return halt(401) if days < 1 || days > 180
 
@@ -61,15 +67,25 @@ module Sidekiq
     end
 
     get "/metrics" do
+      x = params[:substr]
+      class_filter = (x.nil? || x == "") ? nil : Regexp.new(Regexp.escape(x), Regexp::IGNORECASE)
+
       q = Sidekiq::Metrics::Query.new
-      @query_result = q.top_jobs
+      @period = h((params[:period] || "")[0..1])
+      @periods = METRICS_PERIODS
+      minutes = @periods.fetch(@period, @periods.values.first)
+      @query_result = q.top_jobs(minutes: minutes, class_filter: class_filter)
+
       erb(:metrics)
     end
 
     get "/metrics/:name" do
       @name = route_params[:name]
+      @period = h((params[:period] || "")[0..1])
       q = Sidekiq::Metrics::Query.new
-      @query_result = q.for_job(@name)
+      @periods = METRICS_PERIODS
+      minutes = @periods.fetch(@period, @periods.values.first)
+      @query_result = q.for_job(@name, minutes: minutes)
       erb(:metrics_for_job)
     end
 
@@ -82,11 +98,14 @@ module Sidekiq
 
     post "/busy" do
       if params["identity"]
-        p = Sidekiq::Process.new("identity" => params["identity"])
-        p.quiet! if params["quiet"]
-        p.stop! if params["stop"]
+        pro = Sidekiq::ProcessSet[params["identity"]]
+
+        pro.quiet! if params["quiet"]
+        pro.stop! if params["stop"]
       else
         processes.each do |pro|
+          next if pro.embedded?
+
           pro.quiet! if params["quiet"]
           pro.stop! if params["stop"]
         end
@@ -119,11 +138,6 @@ module Sidekiq
     post '/queues/:name' do
       queue = Sidekiq::Queue.new(route_params[:name])
 
-      unless Sidekiq.pro?
-        queue.clear
-        redirect "#{root_path}queues"
-      end
-
       cookies = request.cookies || {}
       if params['pause']
         queue.pause!(cookies: cookies)
@@ -148,9 +162,15 @@ module Sidekiq
     end
 
     get "/morgue" do
-      @count = (params["count"] || 25).to_i
-      (@current_page, @total_size, @dead) = page("dead", params["page"], @count, reverse: true)
-      @dead = @dead.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      x = params[:substr]
+
+      if x && x != ""
+        @dead = search(Sidekiq::DeadSet.new, x)
+      else
+        @count = (params["count"] || 25).to_i
+        (@current_page, @total_size, @dead) = page("dead", params["page"], @count, reverse: true)
+        @dead = @dead.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      end
 
       erb(:morgue)
     end
@@ -169,7 +189,7 @@ module Sidekiq
     end
 
     post "/morgue" do
-      redirect(request.path) unless params["key"]
+      redirect(request.path) unless url_params("key")
 
       params["key"].each do |key|
         job = Sidekiq::DeadSet.new.fetch(*parse_params(key)).first
@@ -192,7 +212,7 @@ module Sidekiq
     end
 
     post "/morgue/:key" do
-      key = route_params[:key]
+      key = route_params(:key)
       halt(404) unless key
 
       job = Sidekiq::DeadSet.new.fetch(*parse_params(key)).first
@@ -202,9 +222,15 @@ module Sidekiq
     end
 
     get "/retries" do
-      @count = (params["count"] || 25).to_i
-      (@current_page, @total_size, @retries) = page("retry", params["page"], @count)
-      @retries = @retries.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      x = url_params("substr")
+
+      if x && x != ""
+        @retries = search(Sidekiq::RetrySet.new, x)
+      else
+        @count = (params["count"] || 25).to_i
+        (@current_page, @total_size, @retries) = page("retry", params["page"], @count)
+        @retries = @retries.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      end
 
       erb(:retries)
     end
@@ -257,9 +283,15 @@ module Sidekiq
     end
 
     get "/scheduled" do
-      @count = (params["count"] || 25).to_i
-      (@current_page, @total_size, @scheduled) = page("schedule", params["page"], @count)
-      @scheduled = @scheduled.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      x = params[:substr]
+
+      if x && x != ""
+        @scheduled = search(Sidekiq::ScheduledSet.new, x)
+      else
+        @count = (params["count"] || 25).to_i
+        (@current_page, @total_size, @scheduled) = page("schedule", params["page"], @count)
+        @scheduled = @scheduled.map { |msg, score| Sidekiq::SortedEntry.new(nil, score, msg) }
+      end
 
       erb(:scheduled)
     end
@@ -301,7 +333,7 @@ module Sidekiq
 
     get "/stats" do
       sidekiq_stats = Sidekiq::Stats.new
-      redis_stats = redis_info.select { |k, v| REDIS_KEYS.include? k }
+      redis_stats = redis_info.slice(*REDIS_KEYS)
       json(
         sidekiq: {
           processed: sidekiq_stats.processed,
@@ -320,12 +352,24 @@ module Sidekiq
     end
 
     get "/stats/queues" do
-      json Sidekiq::Stats::Queues.new.lengths
+      json Sidekiq::Stats.new.queues
+    end
+
+    post "/change_locale" do
+      locale = params["locale"]
+
+      match = available_locales.find { |available|
+        locale == available
+      }
+
+      session[:locale] = match if match
+
+      reload_page
     end
 
     def call(env)
       action = self.class.match(env)
-      return [404, {"content-type" => "text/plain", "x-cascade" => "pass"}, ["Not Found"]] unless action
+      return [404, {Rack::CONTENT_TYPE => "text/plain", Web::X_CASCADE => "pass"}, ["Not Found"]] unless action
 
       app = @klass
       resp = catch(:halt) do
@@ -342,14 +386,19 @@ module Sidekiq
       else
         # rendered content goes here
         headers = {
-          "content-type" => "text/html",
-          "cache-control" => "private, no-store",
-          "content-language" => action.locale,
-          "content-security-policy" => CSP_HEADER
+          Rack::CONTENT_TYPE => "text/html",
+          Rack::CACHE_CONTROL => "private, no-store",
+          Web::CONTENT_LANGUAGE => action.locale,
+          Web::CONTENT_SECURITY_POLICY => process_csp(env, CSP_HEADER_TEMPLATE),
+          Web::X_CONTENT_TYPE_OPTIONS => "nosniff"
         }
         # we'll let Rack calculate Content-Length for us.
         [200, headers, [resp]]
       end
+    end
+
+    def process_csp(env, input)
+      input.gsub("!placeholder!", env[:csp_nonce])
     end
 
     def self.helpers(mod = nil, &block)

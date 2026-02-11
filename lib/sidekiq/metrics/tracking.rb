@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "time"
 require "sidekiq"
 require "sidekiq/metrics/shared"
@@ -29,11 +31,11 @@ module Sidekiq
           # We don't track time for failed jobs as they can have very unpredictable
           # execution times. more important to know average time for successful jobs so we
           # can better recognize when a perf regression is introduced.
-          @lock.synchronize {
-            @grams[klass].record_time(time_ms)
-            @jobs["#{klass}|ms"] += time_ms
-            @totals["ms"] += time_ms
-          }
+          track_time(klass, time_ms)
+        rescue JobRetry::Skip
+          # This is raised when iterable job is interrupted.
+          track_time(klass, time_ms)
+          raise
         rescue Exception
           @lock.synchronize {
             @jobs["#{klass}|f"] += 1
@@ -48,8 +50,8 @@ module Sidekiq
         end
       end
 
-      LONG_TERM = 90 * 24 * 60 * 60
-      MID_TERM = 7 * 24 * 60 * 60
+      # LONG_TERM = 90 * 24 * 60 * 60
+      # MID_TERM = 7 * 24 * 60 * 60
       SHORT_TERM = 8 * 60 * 60
 
       def flush(time = Time.now)
@@ -59,12 +61,13 @@ module Sidekiq
         return if procd == 0 && fails == 0
 
         now = time.utc
-        nowdate = now.strftime("%Y%m%d")
-        nowhour = now.strftime("%Y%m%d|%-H")
+        # nowdate = now.strftime("%Y%m%d")
+        # nowhour = now.strftime("%Y%m%d|%-H")
         nowmin = now.strftime("%Y%m%d|%-H:%-M")
         count = 0
 
         redis do |conn|
+          # persist fine-grained histogram data
           if grams.size > 0
             conn.pipelined do |pipe|
               grams.each do |_, gram|
@@ -73,15 +76,16 @@ module Sidekiq
             end
           end
 
+          # persist coarse grained execution count + execution millis.
+          # note as of today we don't use or do anything with the
+          # daily or hourly rollups.
           [
-            ["j", jobs, nowdate, LONG_TERM],
-            ["j", jobs, nowhour, MID_TERM],
+            # ["j", jobs, nowdate, LONG_TERM],
+            # ["j", jobs, nowhour, MID_TERM],
             ["j", jobs, nowmin, SHORT_TERM]
           ].each do |prefix, data, bucket, ttl|
-            # Quietly seed the new 7.0 stats format so migration is painless.
             conn.pipelined do |xa|
               stats = "#{prefix}|#{bucket}"
-              # logger.debug "Flushing metrics #{stats}"
               data.each_pair do |key, value|
                 xa.hincrby stats, key, value
                 count += 1
@@ -89,21 +93,33 @@ module Sidekiq
               xa.expire(stats, ttl)
             end
           end
-          logger.info "Flushed #{count} metrics"
+          logger.debug "Flushed #{count} metrics"
           count
         end
       end
 
       private
 
+      def track_time(klass, time_ms)
+        @lock.synchronize {
+          @grams[klass].record_time(time_ms)
+          @jobs["#{klass}|ms"] += time_ms
+          @totals["ms"] += time_ms
+        }
+      end
+
       def reset
         @lock.synchronize {
           array = [@totals, @jobs, @grams]
-          @totals = Hash.new(0)
-          @jobs = Hash.new(0)
-          @grams = Hash.new { |hash, key| hash[key] = Histogram.new(key) }
+          reset_instance_variables
           array
         }
+      end
+
+      def reset_instance_variables
+        @totals = Hash.new(0)
+        @jobs = Hash.new(0)
+        @grams = Hash.new { |hash, key| hash[key] = Histogram.new(key) }
       end
     end
 
@@ -121,14 +137,12 @@ module Sidekiq
   end
 end
 
-if ENV["SIDEKIQ_METRICS_BETA"] == "1"
-  Sidekiq.configure_server do |config|
-    exec = Sidekiq::Metrics::ExecutionTracker.new(config)
-    config.server_middleware do |chain|
-      chain.add Sidekiq::Metrics::Middleware, exec
-    end
-    config.on(:beat) do
-      exec.flush
-    end
+Sidekiq.configure_server do |config|
+  exec = Sidekiq::Metrics::ExecutionTracker.new(config)
+  config.server_middleware do |chain|
+    chain.add Sidekiq::Metrics::Middleware, exec
+  end
+  config.on(:beat) do
+    exec.flush
   end
 end

@@ -6,19 +6,66 @@ require "yaml"
 require "cgi"
 
 module Sidekiq
-  # This is not a public API
+  # These methods are available to pages within the Web UI and UI extensions.
+  # They are not public APIs for applications to use.
   module WebHelpers
+    def style_tag(location, **kwargs)
+      global = location.match?(/:\/\//)
+      location = root_path + location if !global && !location.start_with?(root_path)
+      attrs = {
+        type: "text/css",
+        media: "screen",
+        rel: "stylesheet",
+        nonce: csp_nonce,
+        href: location
+      }
+      html_tag(:link, attrs.merge(kwargs))
+    end
+
+    def script_tag(location, **kwargs)
+      global = location.match?(/:\/\//)
+      location = root_path + location if !global && !location.start_with?(root_path)
+      attrs = {
+        type: "text/javascript",
+        nonce: csp_nonce,
+        src: location
+      }
+      html_tag(:script, attrs.merge(kwargs)) {}
+    end
+
+    # NB: keys and values are not escaped; do not allow user input
+    # in the attributes
+    private def html_tag(tagname, attrs)
+      s = +"<#{tagname}"
+      attrs.each_pair do |k, v|
+        next unless v
+        s << " #{k}=\"#{v}\""
+      end
+      if block_given?
+        s << ">"
+        yield s
+        s << "</#{tagname}>"
+      else
+        s << " />"
+      end
+      s
+    end
+
     def strings(lang)
-      @strings ||= {}
+      @@strings ||= {}
 
       # Allow sidekiq-web extensions to add locale paths
       # so extensions can be localized
-      @strings[lang] ||= settings.locales.each_with_object({}) do |path, global|
+      @@strings[lang] ||= settings.locales.each_with_object({}) do |path, global|
         find_locale_files(lang).each do |file|
-          strs = YAML.safe_load(File.open(file))
+          strs = YAML.safe_load(File.read(file))
           global.merge!(strs[lang])
         end
       end
+    end
+
+    def to_json(x)
+      Sidekiq.dump_json(x)
     end
 
     def singularize(str, count)
@@ -30,27 +77,48 @@ module Sidekiq
     end
 
     def clear_caches
-      @strings = nil
-      @locale_files = nil
-      @available_locales = nil
+      @@strings = nil
+      @@locale_files = nil
+      @@available_locales = nil
     end
 
     def locale_files
-      @locale_files ||= settings.locales.flat_map { |path|
+      @@locale_files ||= settings.locales.flat_map { |path|
         Dir["#{path}/*.yml"]
       }
     end
 
     def available_locales
-      @available_locales ||= locale_files.map { |path| File.basename(path, ".yml") }.uniq
+      @@available_locales ||= Set.new(locale_files.map { |path| File.basename(path, ".yml") })
     end
 
     def find_locale_files(lang)
       locale_files.select { |file| file =~ /\/#{lang}\.yml$/ }
     end
 
-    # This is a hook for a Sidekiq Pro feature.  Please don't touch.
-    def filtering(*)
+    def search(jobset, substr)
+      resultset = jobset.scan(substr).to_a
+      @current_page = 1
+      @count = @total_size = resultset.size
+      resultset
+    end
+
+    def filtering(which)
+      erb(:filtering, locals: {which: which})
+    end
+
+    def filter_link(jid, within = "retries")
+      if within.nil?
+        ::Rack::Utils.escape_html(jid)
+      else
+        "<a href='#{root_path}#{within}?substr=#{jid}'>#{::Rack::Utils.escape_html(jid)}</a>"
+      end
+    end
+
+    def display_tags(job, within = "retries")
+      job.tags.map { |tag|
+        "<span class='label label-info jobtag'>#{filter_link(tag, within)}</span>"
+      }.join(" ")
     end
 
     # This view helper provide ability display you html code in
@@ -96,7 +164,10 @@ module Sidekiq
     #
     # Inspiration taken from https://github.com/iain/http_accept_language/blob/master/lib/http_accept_language/parser.rb
     def locale
-      @locale ||= begin
+      # session[:locale] is set via the locale selector from the footer
+      @locale ||= if (l = session&.fetch(:locale, nil)) && available_locales.include?(l)
+        l
+      else
         matched_locale = user_preferred_languages.map { |preferred|
           preferred_language = preferred.split("-", 2).first
 
@@ -111,16 +182,10 @@ module Sidekiq
       end
     end
 
-    # within is used by Sidekiq Pro
-    def display_tags(job, within = nil)
-      job.tags.map { |tag|
-        "<span class='label label-info jobtag'>#{::Rack::Utils.escape_html(tag)}</span>"
-      }.join(" ")
-    end
-
-    # mperham/sidekiq#3243
+    # sidekiq/sidekiq#3243
     def unfiltered?
-      yield unless env["PATH_INFO"].start_with?("/filter/")
+      s = url_params("substr")
+      yield unless s && s.size > 0
     end
 
     def get_locale
@@ -161,22 +226,26 @@ module Sidekiq
       end
     end
 
+    def busy_weights(capsule_weights)
+      # backwards compat with 7.0.0, remove in 7.1
+      cw = [capsule_weights].flatten
+      cw.map { |hash|
+        hash.map { |name, weight| (weight > 0) ? +name << ": " << weight.to_s : name }.join(", ")
+      }.join("; ")
+    end
+
     def stats
       @stats ||= Sidekiq::Stats.new
     end
 
-    def redis_connection
+    def redis_url
       Sidekiq.redis do |conn|
-        conn.connection[:id]
+        conn.config.server_url
       end
     end
 
-    def namespace
-      @ns ||= Sidekiq.redis { |conn| conn.respond_to?(:namespace) ? conn.namespace : nil }
-    end
-
     def redis_info
-      Sidekiq.redis_info
+      Sidekiq.default_configuration.redis_info
     end
 
     def root_path
@@ -241,6 +310,10 @@ module Sidekiq
       "<input type='hidden' name='authenticity_token' value='#{env[:csrf_token]}'/>"
     end
 
+    def csp_nonce
+      env[:csp_nonce]
+    end
+
     def to_display(arg)
       arg.inspect
     rescue
@@ -274,27 +347,17 @@ module Sidekiq
       elsif rss_kb < 10_000_000
         "#{number_with_delimiter((rss_kb / 1024.0).to_i)} MB"
       else
-        "#{number_with_delimiter((rss_kb / (1024.0 * 1024.0)).round(1))} GB"
+        "#{number_with_delimiter(rss_kb / (1024.0 * 1024.0), precision: 1)} GB"
       end
     end
 
-    def number_with_delimiter(number)
-      return "" if number.nil?
-
-      begin
-        Float(number)
-      rescue ArgumentError, TypeError
-        return number
-      end
-
-      options = {delimiter: ",", separator: "."}
-      parts = number.to_s.to_str.split(".")
-      parts[0].gsub!(/(\d)(?=(\d\d\d)+(?!\d))/, "\\1#{options[:delimiter]}")
-      parts.join(options[:separator])
+    def number_with_delimiter(number, options = {})
+      precision = options[:precision] || 0
+      %(<span data-nwp="#{precision}">#{number.round(precision)}</span>)
     end
 
     def h(text)
-      ::Rack::Utils.escape_html(text)
+      ::Rack::Utils.escape_html(text.to_s)
     rescue ArgumentError => e
       raise unless e.message.eql?("invalid byte sequence in UTF-8")
       text.encode!("UTF-16", "UTF-8", invalid: :replace, replace: "").encode!("UTF-8", "UTF-16")
@@ -314,7 +377,7 @@ module Sidekiq
     end
 
     def environment_title_prefix
-      environment = Sidekiq[:environment] || ENV["APP_ENV"] || ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
+      environment = Sidekiq.default_configuration[:environment] || ENV["APP_ENV"] || ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "development"
 
       "[#{environment.upcase}] " unless environment == "production"
     end
@@ -327,11 +390,9 @@ module Sidekiq
       Time.now.utc.strftime("%H:%M:%S UTC")
     end
 
-    def redis_connection_and_namespace
-      @redis_connection_and_namespace ||= begin
-        namespace_suffix = namespace.nil? ? "" : "##{namespace}"
-        "#{redis_connection}#{namespace_suffix}"
-      end
+    def pollable?
+      # there's no point to refreshing the metrics pages every N seconds
+      !(current_path == "" || current_path.index("metrics"))
     end
 
     def retry_or_delete_or_kill(job, params)

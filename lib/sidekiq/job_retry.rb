@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "zlib"
-require "base64"
 require "sidekiq/component"
 
 module Sidekiq
@@ -49,7 +48,7 @@ module Sidekiq
   # The default number of retries is 25 which works out to about 3 weeks
   # You can change the default maximum number of retries in your initializer:
   #
-  #   Sidekiq.options[:max_retries] = 7
+  #   Sidekiq.default_configuration[:max_retries] = 7
   #
   # or limit the number of retries for a particular job and send retries to
   # a low priority queue with:
@@ -60,17 +59,23 @@ module Sidekiq
   #    end
   #
   class JobRetry
+    # Handled means the job failed but has been dealt with
+    # (by creating a retry, rescheduling it, etc). It still
+    # needs to be logged and dispatched to error_handlers.
     class Handled < ::RuntimeError; end
 
+    # Skip means the job failed but Sidekiq does not need to
+    # create a retry, log it or send to error_handlers.
     class Skip < Handled; end
 
     include Sidekiq::Component
 
     DEFAULT_MAX_RETRY_ATTEMPTS = 25
 
-    def initialize(options)
-      @config = options
-      @max_retries = @config[:max_retries] || DEFAULT_MAX_RETRY_ATTEMPTS
+    def initialize(capsule)
+      @config = @capsule = capsule
+      @max_retries = Sidekiq.default_configuration[:max_retries] || DEFAULT_MAX_RETRY_ATTEMPTS
+      @backtrace_cleaner = Sidekiq.default_configuration[:backtrace_cleaner]
     end
 
     # The global retry handler requires only the barest of data.
@@ -91,7 +96,7 @@ module Sidekiq
       if msg["retry"]
         process_retry(nil, msg, queue, e)
       else
-        Sidekiq.death_handlers.each do |handler|
+        @capsule.config.death_handlers.each do |handler|
           handler.call(msg, e)
         rescue => handler_ex
           handle_exception(handler_ex, {context: "Error calling death handler", job: msg})
@@ -129,7 +134,7 @@ module Sidekiq
       process_retry(jobinst, msg, queue, e)
       # We've handled this error associated with this job, don't
       # need to handle it at the global level
-      raise Skip
+      raise Handled
     end
 
     private
@@ -159,19 +164,22 @@ module Sidekiq
       end
 
       if msg["backtrace"]
+        backtrace = @backtrace_cleaner.call(exception.backtrace)
         lines = if msg["backtrace"] == true
-          exception.backtrace
+          backtrace
         else
-          exception.backtrace[0...msg["backtrace"].to_i]
+          backtrace[0...msg["backtrace"].to_i]
         end
 
         msg["error_backtrace"] = compress_backtrace(lines)
       end
 
-      # Goodbye dear message, you (re)tried your best I'm sure.
       return retries_exhausted(jobinst, msg, exception) if count >= max_retry_attempts
 
-      strategy, delay = delay_for(jobinst, count, exception)
+      rf = msg["retry_for"]
+      return retries_exhausted(jobinst, msg, exception) if rf && ((msg["failed_at"] + rf) < Time.now.to_f)
+
+      strategy, delay = delay_for(jobinst, count, exception, msg)
       case strategy
       when :discard
         return # poof!
@@ -190,17 +198,25 @@ module Sidekiq
     end
 
     # returns (strategy, seconds)
-    def delay_for(jobinst, count, exception)
+    def delay_for(jobinst, count, exception, msg)
       rv = begin
         # sidekiq_retry_in can return two different things:
         # 1. When to retry next, as an integer of seconds
         # 2. A symbol which re-routes the job elsewhere, e.g. :discard, :kill, :default
-        jobinst&.sidekiq_retry_in_block&.call(count, exception)
+        block = jobinst&.sidekiq_retry_in_block
+
+        # the sidekiq_retry_in_block can be defined in a wrapped class (ActiveJob for instance)
+        unless msg["wrapped"].nil?
+          wrapped = Object.const_get(msg["wrapped"])
+          block = wrapped.respond_to?(:sidekiq_retry_in_block) ? wrapped.sidekiq_retry_in_block : nil
+        end
+        block&.call(count, exception, msg)
       rescue Exception => e
         handle_exception(e, {context: "Failure scheduling retry using the defined `sidekiq_retry_in` in #{jobinst.class.name}, falling back to default"})
         nil
       end
 
+      rv = rv.to_i if rv.respond_to?(:to_i)
       delay = (count**4) + 15
       if Integer === rv && rv > 0
         delay = rv
@@ -214,16 +230,23 @@ module Sidekiq
     end
 
     def retries_exhausted(jobinst, msg, exception)
-      begin
+      rv = begin
         block = jobinst&.sidekiq_retries_exhausted_block
+
+        # the sidekiq_retries_exhausted_block can be defined in a wrapped class (ActiveJob for instance)
+        unless msg["wrapped"].nil?
+          wrapped = Object.const_get(msg["wrapped"])
+          block = wrapped.respond_to?(:sidekiq_retries_exhausted_block) ? wrapped.sidekiq_retries_exhausted_block : nil
+        end
         block&.call(msg, exception)
       rescue => e
         handle_exception(e, {context: "Error calling retries_exhausted", job: msg})
       end
 
+      return if rv == :discard # poof!
       send_to_morgue(msg) unless msg["dead"] == false
 
-      config.death_handlers.each do |handler|
+      @capsule.config.death_handlers.each do |handler|
         handler.call(msg, exception)
       rescue => e
         handle_exception(e, {context: "Error calling death handler", job: msg})
@@ -235,11 +258,11 @@ module Sidekiq
       payload = Sidekiq.dump_json(msg)
       now = Time.now.to_f
 
-      config.redis do |conn|
+      redis do |conn|
         conn.multi do |xa|
           xa.zadd("dead", now.to_s, payload)
-          xa.zremrangebyscore("dead", "-inf", now - config[:dead_timeout_in_seconds])
-          xa.zremrangebyrank("dead", 0, - config[:dead_max_jobs])
+          xa.zremrangebyscore("dead", "-inf", now - @capsule.config[:dead_timeout_in_seconds])
+          xa.zremrangebyrank("dead", 0, - @capsule.config[:dead_max_jobs])
         end
       end
     end
@@ -276,7 +299,7 @@ module Sidekiq
     def compress_backtrace(backtrace)
       serialized = Sidekiq.dump_json(backtrace)
       compressed = Zlib::Deflate.deflate(serialized)
-      Base64.encode64(compressed)
+      [compressed].pack("m0") # Base64.strict_encode64
     end
   end
 end

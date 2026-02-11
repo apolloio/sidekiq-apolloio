@@ -15,13 +15,19 @@ module Sidekiq
     end
 
     def halt(res)
-      throw :halt, [res, {"content-type" => "text/plain"}, [res.to_s]]
+      throw :halt, [res, {Rack::CONTENT_TYPE => "text/plain"}, [res.to_s]]
     end
 
     def redirect(location)
-      throw :halt, [302, {"location" => "#{request.base_url}#{location}"}, []]
+      throw :halt, [302, {Web::LOCATION => "#{request.base_url}#{location}"}, []]
     end
 
+    def reload_page
+      current_location = request.referer.gsub(request.base_url, "")
+      redirect current_location
+    end
+
+    # deprecated, will warn in 8.0
     def params
       indifferent_hash = Hash.new { |hash, key| hash[key.to_s] if Symbol === key }
 
@@ -31,8 +37,19 @@ module Sidekiq
       indifferent_hash
     end
 
-    def route_params
-      env[WebRouter::ROUTE_PARAMS]
+    # Use like `url_params("page")` within your action blocks
+    def url_params(key)
+      request.params[key]
+    end
+
+    # Use like `route_params(:name)` within your action blocks
+    # key is required in 8.0, nil is only used for backwards compatibility
+    def route_params(key = nil)
+      if key
+        env[WebRouter::ROUTE_PARAMS][key]
+      else
+        env[WebRouter::ROUTE_PARAMS]
+      end
     end
 
     def session
@@ -42,8 +59,13 @@ module Sidekiq
     def erb(content, options = {})
       if content.is_a? Symbol
         unless respond_to?(:"_erb_#{content}")
-          src = ERB.new(File.read("#{Web.settings.views}/#{content}.erb")).src
-          WebAction.class_eval <<-RUBY, __FILE__, __LINE__ + 1
+          views = options[:views] || Web.settings.views
+          filename = "#{views}/#{content}.erb"
+          src = ERB.new(File.read(filename)).src
+
+          # Need to use lineno less by 1 because erb generates a
+          # comment before the source code.
+          WebAction.class_eval <<-RUBY, filename, -1 # standard:disable Style/EvalWithLocation
             def _erb_#{content}
               #{src}
             end
@@ -68,7 +90,7 @@ module Sidekiq
     end
 
     def json(payload)
-      [200, {"content-type" => "application/json", "cache-control" => "private, no-store"}, [Sidekiq.dump_json(payload)]]
+      [200, {Rack::CONTENT_TYPE => "application/json", Rack::CACHE_CONTROL => "private, no-store"}, [Sidekiq.dump_json(payload)]]
     end
 
     def initialize(env, block)

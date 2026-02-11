@@ -9,7 +9,9 @@ require "erb"
 require "fileutils"
 
 require "sidekiq"
+require "sidekiq/config"
 require "sidekiq/component"
+require "sidekiq/capsule"
 require "sidekiq/launcher"
 
 # module ScoutApm
@@ -33,9 +35,7 @@ module Sidekiq # :nodoc:
     attr_accessor :config
 
     def parse(args = ARGV.dup)
-      @config = Sidekiq
-      @config[:error_handlers].clear
-      @config[:error_handlers] << @config.method(:default_error_handler)
+      @config ||= Sidekiq.default_configuration
 
       setup_options(args)
       initialize_logger
@@ -49,10 +49,10 @@ module Sidekiq # :nodoc:
     # Code within this method is not tested because it alters
     # global process state irreversibly.  PRs which improve the
     # test coverage of Sidekiq::CLI are welcomed.
-    def run(boot_app: true)
+    def run(boot_app: true, warmup: true)
       boot_application if boot_app
 
-      if environment == "development" && $stdout.tty? && @config.log_formatter.is_a?(Sidekiq::Logger::Formatters::Pretty)
+      if environment == "development" && $stdout.tty? && @config.logger.formatter.is_a?(Sidekiq::Logger::Formatters::Pretty)
         print_banner
       end
       logger.info "Booted Rails #{::Rails.version} application in #{environment} environment" if rails_app?
@@ -84,26 +84,27 @@ module Sidekiq # :nodoc:
       # touch the connection pool so it is created before we
       # fire startup and start multithreading.
       info = @config.redis_info
-      ver = info["redis_version"]
-      raise "You are connecting to Redis v#{ver}, Sidekiq requires Redis v4.0.0 or greater" if ver < "4"
+      ver = Gem::Version.new(info["redis_version"])
+      raise "You are connecting to Redis #{ver}, Sidekiq requires Redis 6.2.0 or greater" if ver < Gem::Version.new("6.2.0")
 
       maxmemory_policy = info["maxmemory_policy"]
-      if maxmemory_policy != "noeviction"
+      if maxmemory_policy != "noeviction" && maxmemory_policy != ""
+        # Redis Enterprise Cloud returns "" for their policy 😳
         logger.warn <<~EOM
 
 
           WARNING: Your Redis instance will evict Sidekiq data under heavy load.
           The 'noeviction' maxmemory policy is recommended (current policy: '#{maxmemory_policy}').
-          See: https://github.com/mperham/sidekiq/wiki/Using-Redis#memory
+          See: https://github.com/sidekiq/sidekiq/wiki/Using-Redis#memory
 
         EOM
       end
 
       # Since the user can pass us a connection pool explicitly in the initializer, we
       # need to verify the size is large enough or else Sidekiq's performance is dramatically slowed.
-      cursize = @config.redis_pool.size
-      needed = @config[:concurrency] + 2
-      raise "Your pool of #{cursize} Redis connections is too small, please increase the size to at least #{needed}" if cursize < needed
+      @config.capsules.each_pair do |name, cap|
+        raise ArgumentError, "Pool size too small for #{name}" if cap.redis_pool.size < cap.concurrency
+      end
 
       # cache process identity
       @config[:identity] = identity
@@ -111,12 +112,14 @@ module Sidekiq # :nodoc:
       # Touch middleware so it isn't lazy loaded by multiple threads, #3043
       @config.server_middleware
 
+      ::Process.warmup if warmup && ::Process.respond_to?(:warmup) && ENV["RUBY_DISABLE_WARMUP"] != "1"
+
       # Before this point, the process is initializing with just the main thread.
       # Starting here the process will now have multiple threads running.
       fire_event(:startup, reverse: false, reraise: true)
 
-      logger.debug { "Client Middleware: #{@config.client_middleware.map(&:klass).join(", ")}" }
-      logger.debug { "Server Middleware: #{@config.server_middleware.map(&:klass).join(", ")}" }
+      logger.debug { "Client Middleware: #{@config.default_capsule.client_middleware.map(&:klass).join(", ")}" }
+      logger.debug { "Server Middleware: #{@config.default_capsule.server_middleware.map(&:klass).join(", ")}" }
 
       launch(self_read)
     end
@@ -149,19 +152,34 @@ module Sidekiq # :nodoc:
       end
     end
 
-    def self.w
-      "\e[37m"
+    HOLIDAY_COLORS = {
+      # got other color-specific holidays from around the world?
+      # https://developer-book.com/post/definitive-guide-for-colored-text-in-terminal/#256-color-escape-codes
+      "3-17" => "\e[1;32m", # St. Patrick's Day green
+      "10-31" => "\e[38;5;208m" # Halloween orange
+    }
+
+    def self.day
+      @@day ||= begin
+        t = Date.today
+        "#{t.month}-#{t.day}"
+      end
     end
 
     def self.r
-      "\e[31m"
+      @@r ||= HOLIDAY_COLORS[day] || "\e[1;31m"
     end
 
     def self.b
-      "\e[30m"
+      @@b ||= HOLIDAY_COLORS[day] || "\e[30m"
+    end
+
+    def self.w
+      "\e[1;37m"
     end
 
     def self.reset
+      @@b = @@r = @@day = nil
       "\e[0m"
     end
 
@@ -174,7 +192,7 @@ module Sidekiq # :nodoc:
       #{w}     ,$$$$$b#{b}/#{w}md$$$P^'
       #{w}   .d$$$$$$#{b}/#{w}$$$P'
       #{w}   $$^' `"#{b}/#{w}$$$'       #{r}____  _     _      _    _
-      #{w}   $:     ,$$:      #{r} / ___|(_) __| | ___| | _(_) __ _
+      #{w}   $:    #{b}'#{w},$$:      #{r} / ___|(_) __| | ___| | _(_) __ _
       #{w}   `b     :$$       #{r} \\___ \\| |/ _` |/ _ \\ |/ / |/ _` |
       #{w}          $$:        #{r} ___) | | (_| |  __/   <| | (_| |
       #{w}          $$         #{r}|____/|_|\\__,_|\\___|_|\\_\\_|\\__, |
@@ -272,6 +290,18 @@ module Sidekiq # :nodoc:
 
       # merge with defaults
       @config.merge!(opts)
+
+      @config.default_capsule.tap do |cap|
+        cap.queues = opts[:queues]
+        cap.concurrency = opts[:concurrency] || @config[:concurrency]
+      end
+
+      opts[:capsules]&.each do |name, cap_config|
+        @config.capsule(name.to_s) do |cap|
+          cap.queues = cap_config[:queues]
+          cap.concurrency = cap_config[:concurrency]
+        end
+      end
     end
 
     def boot_application
@@ -279,12 +309,11 @@ module Sidekiq # :nodoc:
 
       if File.directory?(@config[:require])
         require "rails"
-        if ::Rails::VERSION::MAJOR < 5
-          raise "Sidekiq no longer supports this version of Rails"
-        else
-          require "sidekiq/rails"
-          require File.expand_path("#{@config[:require]}/config/environment.rb")
+        if ::Rails::VERSION::MAJOR < 6
+          warn "Sidekiq #{Sidekiq::VERSION} only supports Rails 6+"
         end
+        require "sidekiq/rails"
+        require File.expand_path("#{@config[:require]}/config/environment.rb")
         @config[:tag] ||= default_tag
       else
         require @config[:require]
@@ -332,10 +361,6 @@ module Sidekiq # :nodoc:
           opts[:concurrency] = Integer(arg)
         end
 
-        o.on "-d", "--daemon", "Daemonize process" do |arg|
-          puts "ERROR: Daemonization mode was removed in Sidekiq 6.0, please use a proper process supervisor to start and manage your services"
-        end
-
         o.on "-e", "--environment ENV", "Application environment" do |arg|
           opts[:environment] = arg
         end
@@ -345,8 +370,8 @@ module Sidekiq # :nodoc:
         end
 
         o.on "-q", "--queue QUEUE[,WEIGHT]", "Queues to process with optional weights" do |arg|
-          queue, weight = arg.split(",")
-          parse_queue opts, queue, weight
+          opts[:queues] ||= []
+          opts[:queues] << arg
         end
 
         o.on "-r", "--require [PATH|DIR]", "Location of Rails application with jobs or file to require" do |arg|
@@ -365,15 +390,7 @@ module Sidekiq # :nodoc:
           opts[:config_file] = arg
         end
 
-        o.on "-L", "--logfile PATH", "path to writable logfile" do |arg|
-          puts "ERROR: Logfile redirection was removed in Sidekiq 6.0, Sidekiq will only log to STDOUT"
-        end
-
-        o.on "-P", "--pidfile PATH", "path to pidfile" do |arg|
-          puts "ERROR: PID file creation was removed in Sidekiq 6.0, please use a proper process supervisor to start and manage your services"
-        end
-
-        o.on "-V", "--version", "Print version and exit" do |arg|
+        o.on "-V", "--version", "Print version and exit" do
           puts "Sidekiq #{Sidekiq::VERSION}"
           die(0)
         end
@@ -393,9 +410,9 @@ module Sidekiq # :nodoc:
     end
 
     def parse_config(path)
-      erb = ERB.new(File.read(path))
+      erb = ERB.new(File.read(path), trim_mode: "-")
       erb.filename = File.expand_path(path)
-      opts = load_yaml(erb.result) || {}
+      opts = YAML.safe_load(erb.result, permitted_classes: [Symbol], aliases: true) || {}
 
       if opts.respond_to? :deep_symbolize_keys!
         opts.deep_symbolize_keys!
@@ -406,29 +423,7 @@ module Sidekiq # :nodoc:
       opts = opts.merge(opts.delete(environment.to_sym) || {})
       opts.delete(:strict)
 
-      parse_queues(opts, opts.delete(:queues) || [])
-
       opts
-    end
-
-    def load_yaml(src)
-      if Psych::VERSION > "4.0"
-        YAML.safe_load(src, permitted_classes: [Symbol], aliases: true)
-      else
-        YAML.load(src)
-      end
-    end
-
-    def parse_queues(opts, queues_and_weights)
-      queues_and_weights.each { |queue_and_weight| parse_queue(opts, *queue_and_weight) }
-    end
-
-    def parse_queue(opts, queue, weight = nil)
-      opts[:queues] ||= []
-      opts[:strict] = true if opts[:strict].nil?
-      raise ArgumentError, "queues: #{queue} cannot be defined twice" if opts[:queues].include?(queue)
-      [weight.to_i, 1].max.times { opts[:queues] << queue.to_s }
-      opts[:strict] = false if weight.to_i > 0
     end
 
     def rails_app?
@@ -438,4 +433,5 @@ module Sidekiq # :nodoc:
 end
 
 require "sidekiq/systemd"
-require "sidekiq/metrics/tracking" if ENV["SIDEKIQ_METRICS_BETA"]
+require "sidekiq/metrics/tracking"
+require "sidekiq/job/interrupt_handler"

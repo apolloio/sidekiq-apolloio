@@ -1,8 +1,160 @@
 # Sidekiq Pro Changelog
 
-[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/main/Ent-Changes.md)
+[Sidekiq Changes](https://github.com/sidekiq/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/sidekiq/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/sidekiq/sidekiq/blob/main/Ent-Changes.md)
 
 Please see [sidekiq.org](https://sidekiq.org/) for more details and how to buy.
+
+7.3.4
+---------
+
+- Add new `distribution` and `distribution_time` metrics [#6534]
+- `time` metrics no longer hold a Statsd connection while timing the block
+- Fix queue pause affecting all applications using the same Redis instance,
+  even if using different DB indexes. [#6528]
+- Fix broken filter links on Batch details page
+- Use backported APIs for Web extension
+
+7.3.3
+---------
+
+- Don't issue Batch::Empty jobs when reopening but adding zero jobs [#6489]
+
+7.3.2
+---------
+
+- Fix missing `success_at` in batch callbacks [#6463]
+- Add `Sidekiq::Pro.gem_version` API
+
+7.3.1
+---------
+
+- Adjust Batch CSS for better accessibility [#6387]
+- Adjust reliable scheduler for compatibility with DragonflyDB [dragonflydb/dragonfly#2442]
+
+7.3.0
+---------
+
+- Remove `base64` gem dependency.
+
+7.2.1
+---------
+
+- Add explicit `base64` gem dependency for Ruby 3.3 compatibility
+
+7.2.0
+---------
+
+- Adjust redis-client API usage for Sidekiq 7.2
+
+7.1.6
+---------
+
+- Nested batches can now execute inline [#6057]
+
+7.1.5
+---------
+
+- Remove filtering functionality, now open source in Sidekiq [#6036]
+
+7.1.4
+---------
+
+- Raise error instead of silently dropping jobs due to buffer overflow in reliable push [#5909]
+- Add Polish translations
+
+7.1.3
+---------
+
+- Handle ISO8601 dates as enqueued_at values [#5937]
+- Add Korean locale [#3951, @yesh4gvm]
+
+7.1.2
+---------
+
+- Empty batch job now uses the configured default queue [#5914]
+- Handle Oj-created `enqueued_at` String values in the reliable scheduler [#4768]
+
+7.1.1
+---------
+
+- Fix empty batch support [#5903]
+
+7.1.0
+---------
+
+- **SEMANTIC CHANGE**: Empty batches now automatically create an empty job.
+  This ensures callbacks are fired even if no jobs are created. The behavior
+  of empty batches has always been documented as undefined so this is not
+  considered a breaking change.
+- Add `complete_at`, `success_at` and `death_at` timestamps to `S::Batch::Status`, which track when that batch callback was triggered. [#5818]
+- Refactor all `*_at` Batch APIs to consistently return `Time` objects [#5837]
+
+7.0.10
+---------
+
+- Increase fetch timeout to minimize ReadTimeoutError [#5874]
+- Add Hindi locale [gaurish]
+
+7.0.9
+---------
+
+- Dead JIDs on the Batch page are now linked so you can quickly jump to them in Dead
+- Fix unnecessary Redis pool creation [#5830]
+- Fix network logic which could have resulted in pause/unpause not working [#5834]
+
+7.0.8
+---------
+
+- Fix redis-client API usage which could result in stuck Redis connections [#5823]
+
+7.0.7
+---------
+
+- Add Farsi translations
+- Fix death callback firing multiple times per batch [#5740]
+
+7.0.6
+---------
+
+- Fix random fetching with super_fetch [#5726]
+- Fix config issue with reliable_push [#5698]
+
+7.0.4, 7.0.5
+---------
+
+- Fixes for the `pending` fix [#5689]
+
+7.0.3
+---------
+
+- Adjust statsd middleware to not hold an open connection while executing a job [#5684]
+
+7.0.2
+---------
+
+- Clamp Batch `pending` to 0 [#5659]
+- Drop Batch pub/sub feature [#5645]
+
+7.0.1
+---------
+
+- Fix eager connection to Redis when activating reliable_push [#5606]
+
+7.0.0
+---------
+
+- Componentize and capsulize Pro functionality for Sidekiq 7.
+- Add DE locale
+
+5.5.7, 5.5.8
+---------
+
+- Fix typo in `pending` fix [#5689]
+
+5.5.6
+---------
+
+- Clamp Batch `pending` to 0 [#5659]
 
 5.5.5
 ---------
@@ -139,14 +291,14 @@ job.WorkerName.failure -> job.failure with tag worker:WorkerName
 
 - There is no significant migration from Sidekiq Pro 4.0 to 5.0
   but make sure you read the [update notes for Sidekiq
-6.0](https://github.com/mperham/sidekiq/blob/master/6.0-Upgrade.md).
+6.0](https://github.com/sidekiq/sidekiq/blob/main/docs/6.0-Upgrade.md).
 - Removed various deprecated APIs and associated warnings.
 - **BREAKING CHANGE** Remove the `Sidekiq::Batch::Status#dead_jobs` API in favor of
   `Sidekiq::Batch::Status#dead_jids`. [#4217]
 - Update Sidekiq Pro codebase to use StandardRB formatting
 - Fix lingering "b-XXX-died" elements in Redis which could cause
   excessive memory usage. [#4217]
-- Add ES translations, see issues [#3949](https://github.com/mperham/sidekiq/issues/3949) and [#3951](https://github.com/mperham/sidekiq/issues/3951) to add your own language.
+- Add ES translations, see issues [#3949](https://github.com/sidekiq/sidekiq/issues/3949) and [#3951](https://github.com/sidekiq/sidekiq/issues/3951) to add your own language.
 
 4.0.5
 ---------
@@ -189,7 +341,7 @@ batch.on(:death, ...)
 4.0.0
 ---------
 
-- See the [Sidekiq Pro 4.0](Pro-4.0-Upgrade.md) release notes.
+- See the [Sidekiq Pro 4.0](docs/Pro-4.0-Upgrade.md) release notes.
 
 
 3.7.1
@@ -391,7 +543,7 @@ end
 ---------
 
 - New container-friendly fetch algorithm: `timed_fetch`.  See the
-  [wiki documentation](https://github.com/mperham/sidekiq/wiki/Pro-Reliability-Server)
+  [wiki documentation](https://github.com/sidekiq/sidekiq/wiki/Pro-Reliability-Server)
   for trade offs between the two reliability options.  You should
   use this if you are on Heroku, Docker, Amazon ECS or EBS or
   another container-based system.
@@ -434,7 +586,7 @@ end
 3.0.0
 -----------
 
-- See the [Pro 3.0 release notes](Pro-3.0-Upgrade.md).
+- See the [Pro 3.0 release notes](docs/Pro-3.0-Upgrade.md).
 
 2.1.3
 -----------
@@ -528,7 +680,7 @@ mount Sidekiq::Pro::Web.with(redis_pool: POOL2), at: '/sidekiq2', as: 'sidekiq2'
 2.0.0
 -----------
 
-- See [the Upgrade Notes](Pro-2.0-Upgrade.md) for detailed notes.
+- See [the Upgrade Notes](docs/Pro-2.0-Upgrade.md) for detailed notes.
 
 1.9.2
 -----------

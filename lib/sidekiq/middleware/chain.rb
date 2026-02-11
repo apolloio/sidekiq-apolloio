@@ -80,15 +80,6 @@ module Sidekiq
     class Chain
       include Enumerable
 
-      # A unique instance of the middleware chain is created for
-      # each job executed in order to be thread-safe.
-      # @param copy [Sidekiq::Middleware::Chain] New instance of Chain
-      # @returns nil
-      def initialize_copy(copy)
-        copy.instance_variable_set(:@entries, entries.dup)
-        nil
-      end
-
       # Iterate through each middleware in the chain
       def each(&block)
         entries.each(&block)
@@ -103,6 +94,12 @@ module Sidekiq
 
       def entries
         @entries ||= []
+      end
+
+      def copy_for(capsule)
+        chain = Sidekiq::Middleware::Chain.new(capsule)
+        chain.instance_variable_set(:@entries, entries.dup)
+        chain
       end
 
       # Remove all middleware matching the given Class
@@ -152,6 +149,7 @@ module Sidekiq
       def exists?(klass)
         any? { |entry| entry.klass == klass }
       end
+      alias_method :include?, :exists?
 
       # @return [Boolean] if the chain contains no middleware
       def empty?
@@ -168,22 +166,25 @@ module Sidekiq
 
       # Used by Sidekiq to execute the middleware at runtime
       # @api private
-      def invoke(*args)
+      def invoke(*args, &block)
         return yield if empty?
 
         chain = retrieve
-        traverse_chain = proc do
-          if chain.empty?
-            yield
-          else
-            chain.shift.call(*args, &traverse_chain)
+        traverse(chain, 0, args, &block)
+      end
+
+      private
+
+      def traverse(chain, index, args, &block)
+        if index >= chain.size
+          yield
+        else
+          chain[index].call(*args) do
+            traverse(chain, index + 1, args, &block)
           end
         end
-        traverse_chain.call
       end
     end
-
-    private
 
     # Represents each link in the middleware chain
     # @api private

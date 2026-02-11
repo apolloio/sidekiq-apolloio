@@ -31,12 +31,12 @@ module Sidekiq
       "fatal" => 4
     }
     LEVELS.default_proc = proc do |_, level|
-      Sidekiq.logger.warn("Invalid log level: #{level.inspect}")
+      puts("Invalid log level: #{level.inspect}")
       nil
     end
 
     LEVELS.each do |level, numeric_level|
-      define_method("#{level}?") do
+      define_method(:"#{level}?") do
         local_level.nil? ? super() : local_level <= numeric_level
       end
     end
@@ -70,35 +70,10 @@ module Sidekiq
     ensure
       self.local_level = old_local_level
     end
-
-    # Redefined to check severity against #level, and thus the thread-local level, rather than +@level+.
-    # FIXME: Remove when the minimum Ruby version supports overriding Logger#level.
-    def add(severity, message = nil, progname = nil, &block)
-      severity ||= ::Logger::UNKNOWN
-      progname ||= @progname
-
-      return true if @logdev.nil? || severity < level
-
-      if message.nil?
-        if block
-          message = yield
-        else
-          message = progname
-          progname = @progname
-        end
-      end
-
-      @logdev.write format_message(format_severity(severity), Time.now, progname, message)
-    end
   end
 
   class Logger < ::Logger
     include LoggingUtils
-
-    def initialize(*args, **kwargs)
-      super
-      self.formatter = Sidekiq.log_formatter
-    end
 
     module Formatters
       class Base < ::Logger::Formatter

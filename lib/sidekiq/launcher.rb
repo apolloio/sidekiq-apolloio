@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
 require "sidekiq/manager"
-require "sidekiq/fetch"
+require "sidekiq/capsule"
 require "sidekiq/scheduled"
 require "sidekiq/ring_buffer"
 
 module Sidekiq
-  # The Launcher starts the Manager and Poller threads and provides the process heartbeat.
+  # The Launcher starts the Capsule Managers, the Poller thread and provides the process heartbeat.
   class Launcher
     include Sidekiq::Component
 
@@ -16,48 +16,56 @@ module Sidekiq
       proc { "sidekiq" },
       proc { Sidekiq::VERSION },
       proc { |me, data| data["tag"] },
-      proc { |me, data| "[#{Processor::WORK_STATE.size} of #{data["concurrency"]} busy]" },
+      proc { |me, data| "[#{Processor::WORK_STATE.size} of #{me.config.total_concurrency} busy]" },
       proc { |me, data| "stopping" if me.stopping? }
     ]
 
-    attr_accessor :manager, :poller, :fetcher
+    attr_accessor :managers, :poller
 
-    def initialize(options)
-      @config = options
-      options[:fetch] ||= BasicFetch.new(options)
-      @manager = Sidekiq::Manager.new(options)
-      @poller = Sidekiq::Scheduled::Poller.new(options)
+    def initialize(config, embedded: false)
+      @config = config
+      @embedded = embedded
+      @managers = config.capsules.values.map do |cap|
+        Sidekiq::Manager.new(cap)
+      end
+      @poller = Sidekiq::Scheduled::Poller.new(@config)
       @done = false
     end
 
-    def run
-      @thread = safe_thread("heartbeat", &method(:start_heartbeat))
+    # Start this Sidekiq instance. If an embedding process already
+    # has a heartbeat thread, caller can use `async_beat: false`
+    # and instead have thread call Launcher#heartbeat every N seconds.
+    def run(async_beat: true)
+      logger.debug { @config.merge!({}) }
+      Sidekiq.freeze!
+      @thread = safe_thread("heartbeat", &method(:start_heartbeat)) if async_beat
       @poller.start
-      @manager.start
+      @managers.each(&:start)
     end
 
     # Stops this instance from processing any more jobs,
-    #
     def quiet
+      return if @done
+
       @done = true
-      @manager.quiet
+      @managers.each(&:quiet)
       @poller.terminate
+      fire_event(:quiet, reverse: true)
     end
 
     # Shuts down this Sidekiq instance. Waits up to the deadline for all jobs to complete.
     def stop
       deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + @config[:timeout]
 
-      @done = true
-      @manager.quiet
-      @poller.terminate
+      quiet
+      stoppers = @managers.map do |mgr|
+        Thread.new do
+          mgr.stop(deadline)
+        end
+      end
 
-      @manager.stop(deadline)
-
-      # Requeue everything in case there was a thread which fetched a job while the process was stopped.
-      # This call is a no-op in Sidekiq but necessary for Sidekiq Pro.
-      strategy = @config[:fetch]
-      strategy.bulk_requeue([], @config)
+      fire_event(:shutdown, reverse: true)
+      stoppers.each(&:join)
 
       clear_heartbeat
     end
@@ -66,16 +74,28 @@ module Sidekiq
       @done
     end
 
+    # If embedding Sidekiq, you can have the process heartbeat
+    # call this method to regularly heartbeat rather than creating
+    # a separate thread.
+    def heartbeat
+      ❤
+    end
+
     private unless $TESTING
 
-    BEAT_PAUSE = 5
+    BEAT_PAUSE = 10
 
     def start_heartbeat
       loop do
-        heartbeat
+        beat
         sleep BEAT_PAUSE
       end
       logger.info("Heartbeat stopping...")
+    end
+
+    def beat
+      $0 = PROCTITLES.map { |proc| proc.call(self, to_data) }.compact.join(" ") unless @embedded
+      ❤
     end
 
     def clear_heartbeat
@@ -94,12 +114,6 @@ module Sidekiq
       # best effort, ignore network errors
     end
 
-    def heartbeat
-      $0 = PROCTITLES.map { |proc| proc.call(self, to_data) }.compact.join(" ")
-
-      ❤
-    end
-
     def flush_stats
       fails = Processor::FAILURE.reset
       procd = Processor::PROCESSED.reset
@@ -107,7 +121,7 @@ module Sidekiq
 
       nowdate = Time.now.utc.strftime("%Y-%m-%d")
       begin
-        Sidekiq.redis do |conn|
+        redis do |conn|
           conn.pipelined do |pipeline|
             pipeline.incrby("stat:processed", procd)
             pipeline.incrby("stat:processed:#{nowdate}", procd)
@@ -119,9 +133,7 @@ module Sidekiq
           end
         end
       rescue => ex
-        # we're exiting the process, things might be shut down so don't
-        # try to handle the exception
-        Sidekiq.logger.warn("Unable to flush stats: #{ex}")
+        logger.warn("Unable to flush stats: #{ex}")
       end
     end
 
@@ -130,31 +142,20 @@ module Sidekiq
       fails = procd = 0
 
       begin
-        fails = Processor::FAILURE.reset
-        procd = Processor::PROCESSED.reset
-        curstate = Processor::WORK_STATE.dup
+        flush_stats
 
-        nowdate = Time.now.utc.strftime("%Y-%m-%d")
+        curstate = Processor::WORK_STATE.dup
+        curstate.transform_values! { |val| Sidekiq.dump_json(val) }
 
         redis do |conn|
-          conn.multi do |transaction|
-            transaction.incrby("stat:processed", procd)
-            transaction.incrby("stat:processed:#{nowdate}", procd)
-            transaction.expire("stat:processed:#{nowdate}", STATS_TTL)
-
-            transaction.incrby("stat:failed", fails)
-            transaction.incrby("stat:failed:#{nowdate}", fails)
-            transaction.expire("stat:failed:#{nowdate}", STATS_TTL)
-          end
-
           # work is the current set of executing jobs
           work_key = "#{key}:work"
-          conn.pipelined do |transaction|
+          conn.multi do |transaction|
             transaction.unlink(work_key)
-            curstate.each_pair do |tid, hash|
-              transaction.hset(work_key, tid, Sidekiq.dump_json(hash))
+            if curstate.size > 0
+              transaction.hset(work_key, curstate)
+              transaction.expire(work_key, 60)
             end
-            transaction.expire(work_key, 60)
           end
         end
 
@@ -163,11 +164,11 @@ module Sidekiq
         fails = procd = 0
         kb = memory_usage(::Process.pid)
 
-        _, exists, _, _, msg = redis { |conn|
+        _, exists, _, _, signal = redis { |conn|
           conn.multi { |transaction|
             transaction.sadd("processes", [key])
-            transaction.exists?(key)
-            transaction.hmset(key, "info", to_json,
+            transaction.exists(key)
+            transaction.hset(key, "info", to_json,
               "busy", curstate.size,
               "beat", Time.now.to_f,
               "rtt_us", rtt,
@@ -179,12 +180,10 @@ module Sidekiq
         }
 
         # first heartbeat or recovering from an outage and need to reestablish our heartbeat
-        fire_event(:heartbeat) unless exists
+        fire_event(:heartbeat) unless exists > 0
         fire_event(:beat, oneshot: false)
 
-        return unless msg
-
-        ::Process.kill(msg, ::Process.pid)
+        ::Process.kill(signal, ::Process.pid) if signal && !@embedded
       rescue => e
         # ignore all redis/network issues
         logger.error("heartbeat: #{e}")
@@ -218,7 +217,7 @@ module Sidekiq
           Last RTT readings were #{RTT_READINGS.buffer.inspect}, ideally these should be < 1000.
           Ensure Redis is running in the same AZ or datacenter as Sidekiq.
           If these values are close to 100,000, that means your Sidekiq process may be
-          CPU-saturated; reduce your concurrency and/or see https://github.com/mperham/sidekiq/discussions/5039
+          CPU-saturated; reduce your concurrency and/or see https://github.com/sidekiq/sidekiq/discussions/5039
         EOM
         RTT_READINGS.reset
       end
@@ -251,11 +250,18 @@ module Sidekiq
         "started_at" => Time.now.to_f,
         "pid" => ::Process.pid,
         "tag" => @config[:tag] || "",
-        "concurrency" => @config[:concurrency],
-        "queues" => @config[:queues].uniq,
-        "labels" => @config[:labels],
-        "identity" => identity
+        "concurrency" => @config.total_concurrency,
+        "queues" => @config.capsules.values.flat_map { |cap| cap.queues }.uniq,
+        "weights" => to_weights,
+        "labels" => @config[:labels].to_a,
+        "identity" => identity,
+        "version" => Sidekiq::VERSION,
+        "embedded" => @embedded
       }
+    end
+
+    def to_weights
+      @config.capsules.values.map(&:weights)
     end
 
     def to_json

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "sidekiq"
 require "date"
 require "set"
@@ -13,14 +15,15 @@ module Sidekiq
     # NB: all metrics and times/dates are UTC only. We specifically do not
     # support timezones.
     class Query
-      def initialize(pool: Sidekiq.redis_pool, now: Time.now)
+      def initialize(pool: nil, now: Time.now)
         @time = now.utc
-        @pool = pool
+        @pool = pool || Sidekiq.default_configuration.redis_pool
         @klass = nil
       end
 
       # Get metric data for all jobs from the last hour
-      def top_jobs(minutes: 60)
+      #  +class_filter+: return only results for classes matching filter
+      def top_jobs(class_filter: nil, minutes: 60)
         result = Result.new
 
         time = @time
@@ -39,6 +42,7 @@ module Sidekiq
         redis_results.each do |hash|
           hash.each do |k, v|
             kls, metric = k.split("|")
+            next if class_filter && !class_filter.match?(kls)
             result.job_results[kls].add_metric metric, time, v.to_i
           end
           time -= 60
@@ -70,7 +74,7 @@ module Sidekiq
             result.job_results[klass].add_metric "ms", time, ms.to_i if ms
             result.job_results[klass].add_metric "p", time, p.to_i if p
             result.job_results[klass].add_metric "f", time, f.to_i if f
-            result.job_results[klass].add_hist time, Histogram.new(klass).fetch(conn, time)
+            result.job_results[klass].add_hist time, Histogram.new(klass).fetch(conn, time).reverse
             time -= 60
           end
         end
@@ -117,6 +121,7 @@ module Sidekiq
 
         def total_avg(metric = "ms")
           completed = totals["p"] - totals["f"]
+          return 0 if completed.zero?
           totals[metric].to_f / completed
         end
 

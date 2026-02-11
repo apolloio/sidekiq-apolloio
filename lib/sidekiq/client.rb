@@ -21,7 +21,6 @@ module Sidekiq
     # Sidekiq.client_middleware but you can change as necessary.
     #
     def middleware(&block)
-      @chain ||= Sidekiq.client_middleware
       if block
         @chain = @chain.dup
         yield @chain
@@ -31,18 +30,49 @@ module Sidekiq
 
     attr_accessor :redis_pool
 
-    # Sidekiq::Client normally uses the default Redis pool but you may
-    # pass a custom ConnectionPool if you want to shard your
-    # Sidekiq jobs across several Redis instances (for scalability
-    # reasons, e.g.)
+    # Sidekiq::Client is responsible for pushing job payloads to Redis.
+    # Requires the :pool or :config keyword argument.
     #
-    #   Sidekiq::Client.new(ConnectionPool.new { Redis.new })
+    #   Sidekiq::Client.new(pool: Sidekiq::RedisConnection.create)
     #
-    # Generally this is only needed for very large Sidekiq installs processing
-    # thousands of jobs per second.  I don't recommend sharding unless you
-    # cannot scale any other way (e.g. splitting your app into smaller apps).
-    def initialize(redis_pool = nil)
-      @redis_pool = redis_pool || Thread.current[:sidekiq_via_pool] || Sidekiq.redis_pool
+    # Inside the Sidekiq process, you can reuse the configured resources:
+    #
+    #   Sidekiq::Client.new(config: config)
+    #
+    # @param pool [ConnectionPool] explicit Redis pool to use
+    # @param config [Sidekiq::Config] use the pool and middleware from the given Sidekiq container
+    # @param chain [Sidekiq::Middleware::Chain] use the given middleware chain
+    def initialize(*args, **kwargs)
+      if args.size == 1 && kwargs.size == 0
+        warn "Sidekiq::Client.new(pool) is deprecated, please use Sidekiq::Client.new(pool: pool), #{caller(0..3)}"
+        # old calling method, accept 1 pool argument
+        @redis_pool = args[0]
+        @chain = Sidekiq.default_configuration.client_middleware
+        @config = Sidekiq.default_configuration
+      else
+        # new calling method: keyword arguments
+        @config = kwargs[:config] || Sidekiq.default_configuration
+        @redis_pool = kwargs[:pool] || Thread.current[:sidekiq_redis_pool] || @config&.redis_pool
+        @chain = kwargs[:chain] || @config&.client_middleware
+        raise ArgumentError, "No Redis pool available for Sidekiq::Client" unless @redis_pool
+      end
+    end
+
+    # Cancel the IterableJob with the given JID.
+    # **NB: Cancellation is asynchronous.** Iteration checks every
+    # five seconds so this will not immediately stop the given job.
+    def cancel!(jid)
+      key = "it-#{jid}"
+      _, result, _ = Sidekiq.redis do |c|
+        c.pipelined do |p|
+          p.hsetnx(key, "cancelled", Time.now.to_i)
+          p.hget(key, "cancelled")
+          p.expire(key, Sidekiq::Job::Iterable::STATE_TTL)
+          # TODO When Redis 7.2 is required
+          # p.expire(key, Sidekiq::Job::Iterable::STATE_TTL, "nx")
+        end
+      end
+      result.to_i
     end
 
     ##
@@ -53,6 +83,7 @@ module Sidekiq
     #   args - an array of simple arguments to the perform method, must be JSON-serializable
     #   at - timestamp to schedule the job (optional), must be Numeric (e.g. Time.now.to_f)
     #   retry - whether to retry this job if it fails, default true or an integer number of retries
+    #   retry_for - relative amount of time to retry this job if it fails, default nil
     #   backtrace - whether to save any error backtrace, default false
     #
     # If class is set to the class name, the jobs' options will be based on Sidekiq's default
@@ -60,7 +91,7 @@ module Sidekiq
     #
     # Any options valid for a job class's sidekiq_options are also available here.
     #
-    # All options must be strings, not symbols.  NB: because we are serializing to JSON, all
+    # All keys must be strings, not symbols.  NB: because we are serializing to JSON, all
     # symbols in 'args' will be converted to strings.  Note that +backtrace: true+ can take quite a bit of
     # space in Redis; a large volume of failing jobs can start Redis swapping if you aren't careful.
     #
@@ -83,8 +114,9 @@ module Sidekiq
 
     ##
     # Push a large number of jobs to Redis. This method cuts out the redis
-    # network round trip latency.  I wouldn't recommend pushing more than
-    # 1000 per call but YMMV based on network quality, size of job args, etc.
+    # network round trip latency. It pushes jobs in batches if more than
+    # `:batch_size` (1000 by default) of jobs are passed. I wouldn't recommend making `:batch_size`
+    # larger than 1000 but YMMV based on network quality, size of job args, etc.
     # A large number of jobs can cause a bit of Redis command processing latency.
     #
     # Takes the same arguments as #push except that args is expected to be
@@ -92,13 +124,15 @@ module Sidekiq
     # is run through the client middleware pipeline and each job gets its own Job ID
     # as normal.
     #
-    # Returns an array of the of pushed jobs' jids.  The number of jobs pushed can be less
-    # than the number given if the middleware stopped processing for one or more jobs.
+    # Returns an array of the of pushed jobs' jids, may contain nils if any client middleware
+    # prevented a job push.
+    #
+    # Example (pushing jobs in batches):
+    #   push_bulk('class' => MyJob, 'args' => (1..100_000).to_a, batch_size: 1_000)
+    #
     def push_bulk(items)
+      batch_size = items.delete(:batch_size) || items.delete("batch_size") || 1_000
       args = items["args"]
-      raise ArgumentError, "Bulk arguments must be an Array of Arrays: [[1], [2]]" unless args.is_a?(Array) && args.all?(Array)
-      return [] if args.empty? # no jobs to push
-
       at = items.delete("at")
       raise ArgumentError, "Job 'at' must be a Numeric or an Array of Numeric timestamps" if at && (Array(at).empty? || !Array(at).all? { |entry| entry.is_a?(Numeric) })
       raise ArgumentError, "Job 'at' Array must have same size as 'args' Array" if at.is_a?(Array) && at.size != args.size
@@ -107,18 +141,28 @@ module Sidekiq
       raise ArgumentError, "Explicitly passing 'jid' when pushing more than one job is not supported" if jid && args.size > 1
 
       normed = normalize_item(items)
-      payloads = args.map.with_index { |job_args, index|
-        copy = normed.merge("args" => job_args, "jid" => SecureRandom.hex(12))
-        copy["at"] = (at.is_a?(Array) ? at[index] : at) if at
-        result = middleware.invoke(items["class"], copy, copy["queue"], @redis_pool) do
-          verify_json(copy)
-          copy
-        end
-        result || nil
-      }.compact
+      slice_index = 0
+      result = args.each_slice(batch_size).flat_map do |slice|
+        raise ArgumentError, "Bulk arguments must be an Array of Arrays: [[1], [2]]" unless slice.is_a?(Array) && slice.all?(Array)
+        break [] if slice.empty? # no jobs to push
 
-      raw_push(payloads) unless payloads.empty?
-      payloads.collect { |payload| payload["jid"] }
+        payloads = slice.map.with_index { |job_args, index|
+          copy = normed.merge("args" => job_args, "jid" => SecureRandom.hex(12))
+          copy["at"] = (at.is_a?(Array) ? at[slice_index + index] : at) if at
+          result = middleware.invoke(items["class"], copy, copy["queue"], @redis_pool) do
+            verify_json(copy)
+            copy
+          end
+          result || nil
+        }
+        slice_index += batch_size
+
+        to_push = payloads.compact
+        raw_push(to_push) unless to_push.empty?
+        payloads.map { |payload| payload&.[]("jid") }
+      end
+
+      result.is_a?(Enumerator::Lazy) ? result.force : result
     end
 
     # Allows sharding of jobs across any number of Redis instances.  All jobs
@@ -135,11 +179,11 @@ module Sidekiq
     # you cannot scale any other way (e.g. splitting your app into smaller apps).
     def self.via(pool)
       raise ArgumentError, "No pool given" if pool.nil?
-      current_sidekiq_pool = Thread.current[:sidekiq_via_pool]
-      Thread.current[:sidekiq_via_pool] = pool
+      current_sidekiq_pool = Thread.current[:sidekiq_redis_pool]
+      Thread.current[:sidekiq_redis_pool] = pool
       yield
     ensure
-      Thread.current[:sidekiq_via_pool] = current_sidekiq_pool
+      Thread.current[:sidekiq_redis_pool] = current_sidekiq_pool
     end
 
     class << self
@@ -147,8 +191,8 @@ module Sidekiq
         new.push(item)
       end
 
-      def push_bulk(items)
-        new.push_bulk(items)
+      def push_bulk(...)
+        new.push_bulk(...)
       end
 
       # Resque compatibility helpers.  Note all helpers
@@ -201,14 +245,14 @@ module Sidekiq
           conn.pipelined do |pipeline|
             atomic_push(pipeline, payloads)
           end
-        rescue RedisConnection.adapter::BaseError => ex
+        rescue RedisClient::Error => ex
           # 2550 Failover can cause the server to become a replica, need
           # to disconnect and reopen the socket to get back to the primary.
           # 4495 Use the same logic if we have a "Not enough replicas" error from the primary
           # 4985 Use the same logic when a blocking command is force-unblocked
           # The retry logic is copied from sidekiq.rb
           if retryable && ex.message =~ /READONLY|NOREPLICAS|UNBLOCKED/
-            conn.disconnect!
+            conn.close
             retryable = false
             retry
           end
@@ -221,7 +265,12 @@ module Sidekiq
     def atomic_push(conn, payloads)
       if payloads.first.key?("at")
         conn.zadd("schedule", payloads.flat_map { |hash|
-          at = hash.delete("at").to_s
+          at = hash["at"].to_s
+          # ActiveJob sets this but the job has not been enqueued yet
+          hash.delete("enqueued_at")
+          # TODO: Use hash.except("at") when support for Ruby 2.7 is dropped
+          hash = hash.dup
+          hash.delete("at")
           [at, Sidekiq.dump_json(hash)]
         })
       else

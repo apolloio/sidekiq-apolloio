@@ -1,7 +1,5 @@
-<div class="row header">
-  <div class="col-sm-4 pull-left flip">
-    <h3><%= t('Status') %></h3>
-  </div>
+<div class="header-container">
+  <h1><%= t('Status') %></h1>
 </div>
 
 <div class="stats-wrapper">
@@ -29,26 +27,25 @@
   </div>
 </div>
 
-<div class="row header">
-  <div class="col-sm-4 pull-left flip">
-    <h3><%= t('Processes') %></h3>
-  </div>
-  <div class="col-sm-3 pull-right flip">
+<div class="header-container">
+  <h1><%= t('Processes') %></h1>
+  <div>
     <form method="POST" class="warning-messages">
       <%= csrf_tag %>
       <div class="btn-group pull-right flip">
-        <button class="btn btn-warn" type="submit" name="quiet" value="1" data-confirm="<%= t('AreYouSure') %>"><%= t('QuietAll') %></button>
-        <button class="btn btn-danger" type="submit" name="stop" value="1" data-confirm="<%= t('AreYouSure') %>"><%= t('StopAll') %></button>
+        <input class="btn btn-warn" type="submit" name="quiet" value="<%= t('QuietAll') %>" data-confirm="<%= t('AreYouSure') %>"/>
+        <input class="btn btn-danger" type="submit" name="stop" value="<%= t('StopAll') %>" data-confirm="<%= t('AreYouSure') %>"/>
       </div>
     </form>
   </div>
 </div>
+
 <div class="table_container">
   <table class="processes table table-hover table-bordered table-striped">
     <thead>
       <th><%= t('Name') %></th>
       <th><%= t('Started') %></th>
-      <th class="col-sm-1"><%= t('RSS') %><a target="blank" href="https://github.com/mperham/sidekiq/wiki/Memory#rss"><span class="info-circle" title="Click to learn more about RSS">?</span></a></th>
+      <th class="col-sm-1"><%= t('RSS') %><a target="blank" href="https://github.com/sidekiq/sidekiq/wiki/Memory#rss"><span class="info-circle" title="Click to learn more about RSS">?</span></a></th>
       <th class="col-sm-1"><%= t('Threads') %></th>
       <th class="col-sm-1"><%= t('Busy') %></th>
       <th>&nbsp;</th>
@@ -62,6 +59,9 @@
           <% process.labels.each do |label| %>
             <span class="label label-info"><%= label %></span>
           <% end %>
+          <% if process.embedded? %>
+            <span class="label label-default">embedded</span>
+          <% end %>
           <% if process.stopping? %>
             <span class="label label-danger">quiet</span>
           <% end %>
@@ -70,36 +70,47 @@
           <% end %>
           <br>
           <b><%= "#{t('Queues')}: " %></b>
-          <%= process.queues.join(", ") %>
+          <% if process.weights %>
+            <%= busy_weights(process.weights) %>
+          <% else %>
+            <%= process.queues.sort.join(", ") %>
+          <% end %>
+          <% if process.version != Sidekiq::VERSION %>
+            <br>
+            <b><%= "#{t('Version')}: " %></b>
+            <% if process.version %>
+              <%= process.version %>
+            <% else %>
+              <%= t('Unknown') %>
+            <% end %>
+          <% end %>
         </td>
         <td><%= relative_time(Time.at(process['started_at'])) %></td>
-        <td><%= format_memory(process['rss'].to_i) %></td>
-        <td><%= process['concurrency'] %></td>
-        <td><%= process['busy'] %></td>
+        <td class="num"><%= format_memory(process['rss'].to_i) %></td>
+        <td class="num"><%= number_with_delimiter(process['concurrency']) %></td>
+        <td class="num"><%= number_with_delimiter(process['busy']) %></td>
         <td>
-          <form method="POST">
-            <%= csrf_tag %>
-            <input type="hidden" name="identity" value="<%= process['identity'] %>"/>
+          <% unless process.embedded? %>
+            <form method="POST">
+              <%= csrf_tag %>
+              <input type="hidden" name="identity" value="<%= process['identity'] %>"/>
 
-            <div class="btn-group pull-right flip">
-              <% unless process.stopping? %><button class="btn btn-xs btn-warn" type="submit" name="quiet" value="1"><%= t('Quiet') %></button><% end %>
-              <button class="btn btn-xs btn-danger" type="submit" name="stop" value="1"><%= t('Stop') %></button>
-            </div>
-          </form>
+              <div class="btn-group pull-right flip">
+                <% unless process.stopping? %><button class="btn btn-xs btn-warn" type="submit" name="quiet" value="1"><%= t('Quiet') %></button><% end %>
+                <button class="btn btn-xs btn-danger" type="submit" name="stop" value="1"><%= t('Stop') %></button>
+              </div>
+            </form>
+          <% end %>
         </td>
       </tr>
     <% end %>
   </table>
 </div>
 
-<div class="row header">
-  <div class="col-sm-7">
-    <h3><%= t('Jobs') %></h3>
-  </div>
+<div class="header-container">
+  <h1><%= t('Jobs') %></h1>
   <% if @workset.size > 0 && @total_size > @count %>
-    <div class="col-sm-4">
-      <%= erb :_paging, locals: { url: "#{root_path}busy" } %>
-    </div>
+    <%= erb :_paging, locals: { url: "#{root_path}busy" } %>
   <% end %>
 </div>
 
@@ -114,14 +125,14 @@
       <th><%= t('Arguments') %></th>
       <th><%= t('Started') %></th>
     </thead>
-    <% @workset.each do |process, thread, msg| %>
-      <% job = Sidekiq::JobRecord.new(msg['payload']) %>
+    <% @workset.each do |process, thread, work| %>
+      <% job = work.job %>
       <tr>
         <td><%= process %></td>
         <td><%= thread %></td>
         <td><%= job.jid %></td>
         <td>
-          <a href="<%= root_path %>queues/<%= msg['queue'] %>"><%= msg['queue'] %></a>
+          <a href="<%= root_path %>queues/<%= work.queue %>"><%= work.queue %></a>
         </td>
         <td>
           <%= job.display_class %>
@@ -130,7 +141,7 @@
         <td>
           <div class="args"><%= display_args(job.display_args) %></div>
         </td>
-        <td><%= relative_time(Time.at(msg['run_at'])) %></td>
+        <td><%= relative_time(work.run_at) %></td>
       </tr>
     <% end %>
   </table>

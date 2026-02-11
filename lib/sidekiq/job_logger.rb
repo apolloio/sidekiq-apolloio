@@ -2,22 +2,23 @@
 
 module Sidekiq
   class JobLogger
-    def initialize(logger = Sidekiq.logger)
-      @logger = logger
+    def initialize(config)
+      @config = config
+      @logger = @config.logger
+      @skip = !!@config[:skip_default_job_logging]
     end
 
     def call(item, queue)
       start = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
-      @logger.info("start")
+      @logger.info { "start" } unless @skip
 
       yield
 
       Sidekiq::Context.add(:elapsed, elapsed(start))
-      @logger.info("done")
+      @logger.info { "done" } unless @skip
     rescue Exception
       Sidekiq::Context.add(:elapsed, elapsed(start))
-      @logger.info("fail")
-
+      @logger.info { "fail" } unless @skip
       raise
     end
 
@@ -33,7 +34,7 @@ module Sidekiq
 
       Thread.current[:sidekiq_context] = h
       level = job_hash["log_level"]
-      if level
+      if level && @logger.respond_to?(:log_at)
         @logger.log_at(level, &block)
       else
         yield

@@ -3,29 +3,32 @@ source "https://rubygems.org"
 gemspec
 
 gem "rake"
-gem "redis", "~> 4.5"
-gem "redis-namespace"
+RAILS_VERSION = "~> 7.1"
+gem "actionmailer", RAILS_VERSION
+gem "actionpack", RAILS_VERSION
+gem "activejob", RAILS_VERSION
+gem "activerecord", RAILS_VERSION
+gem "railties", RAILS_VERSION
 gem "redis-client"
-gem "rails", "~> 6.0"
-gem "sqlite3", platforms: :ruby
-gem "activerecord-jdbcsqlite3-adapter", platforms: :jruby
-gem "after_commit_everywhere"
+# gem "bumbler"
+# gem "debug"
 
-# mail dependencies
-gem "net-smtp", platforms: :mri, require: false
+gem "sqlite3", "~> 1.7", platforms: :ruby
+gem "activerecord-jdbcsqlite3-adapter", platforms: :jruby
+gem "after_commit_everywhere", require: false
+gem "yard"
+gem "csv"
 
 group :test do
-  gem "minitest"
+  gem "maxitest"
   gem "simplecov"
-  gem "codecov", require: false
 end
 
 group :development, :test do
   gem "standard", require: false
-  gem "pry"
 end
 
 group :load_test do
-  gem "hiredis"
   gem "toxiproxy"
+  gem "ruby-prof"
 end

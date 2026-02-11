@@ -1,4 +1,7 @@
-<h3><%= t('Queues') %></h3>
+<div class="header-container">
+  <h1><%= t('Queues') %></h1>
+</div>
+
 <div class="table_container">
   <style>
     .btn-warning {
@@ -22,7 +25,7 @@
       <th><%= t('Latency') %></th>
       <th class="col-md-3"><%= t('Actions') %></th>
     </thead>
-    <% @queues.sort_by(&:name).each_slice(@count).to_a[@current_page - 1].each do |queue| %>
+    <% @queues.sort_by(&:name).each_slice(@count).to_a[@current_page - 1]&.each do |queue| %>
       <tr>
         <td>
           <a href="<%= root_path %>queues/<%= CGI.escape(queue.name) %>"><%= h queue.name %></a>
@@ -33,9 +36,12 @@
             <span class="label label-danger">Non-work hours only</span>
           <% end %>
         </td>
-        <td><%= number_with_delimiter(queue.size) %> </td>
-        <td>
-          <% queue_latency = queue.latency %><%= number_with_delimiter(queue_latency.round(2)) %><%= (queue_latency < 60) ? '' : " (#{relative_time(Time.at(Time.now.to_f - queue_latency))})" %> </td>
+        <td class="num"><%= number_with_delimiter(queue.size) %> </td>
+        <td class="num">
+          <% queue_latency = queue.latency %>
+          <%= (queue_latency < 60) ? '' : " (#{relative_time(Time.at(Time.now.to_f - queue_latency))})" %>
+          <%= number_with_delimiter(queue_latency, precision: 2) %>
+        </td>
         <td class="delete-confirm">
           <form action="<%= root_path %>queues/<%= CGI.escape(queue.name) %>" method="post">
             <%= csrf_tag %>

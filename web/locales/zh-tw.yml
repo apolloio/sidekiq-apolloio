@@ -43,6 +43,7 @@ zh-tw: # <---- change this to your locale code
   KillAll: 全部取消
   NoRetriesFound: 找無可重試的工作
   Error: 錯誤
+  ErrorBacktrace: 錯誤的回調追踨
   ErrorClass: 錯誤類別
   ErrorMessage: 錯誤訊息
   ErrorBacktrace: 詳細錯誤訊息
@@ -62,7 +63,15 @@ zh-tw: # <---- change this to your locale code
   ThreeMonths: 三個月
   SixMonths: 六個月
   Failures: 失敗
-  DeadJobs: 停滯工作
+  GoBack: ← 返回
+  History: 歷史資料
+  Job: 工作
+  Jobs: 工作
+  LastRetry: 最後一次重試
+  LivePoll: 即時輪詢
+  MemoryUsage: 記憶體使用量
+  Namespace: 命名空間
+  NextRetry: 下次重試
   NoDeadJobsFound: 沒有發現任何停滯的工作
   Dead: 停滯
   Process: 程序
@@ -89,5 +98,4 @@ zh-tw: # <---- change this to your locale code
   TotalExecutionTime: 總執行時間
   AvgExecutionTime: 平均執行時間
   Context: 上下文
-  Bucket: 桶
   NoJobMetricsFound: 找無工作相關計量資料

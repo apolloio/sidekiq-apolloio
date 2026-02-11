@@ -1,150 +1,92 @@
 # frozen_string_literal: true
 
 require "connection_pool"
-require "redis"
 require "uri"
+require "sidekiq/redis_client_adapter"
 
 module Sidekiq
   module RedisConnection
-    class RedisAdapter
-      BaseError = Redis::BaseError
-      CommandError = Redis::CommandError
-
-      def initialize(options)
-        warn("Usage of the 'redis' gem within Sidekiq itself is deprecated, Sidekiq 7.0 will only use the new, simpler 'redis-client' gem", caller) if ENV["SIDEKIQ_REDIS_CLIENT"] == "1"
-        @options = options
-      end
-
-      def new_client
-        namespace = @options[:namespace]
-
-        client = Redis.new client_opts(@options)
-        if namespace
-          begin
-            require "redis/namespace"
-            Redis::Namespace.new(namespace, redis: client)
-          rescue LoadError
-            Sidekiq.logger.error("Your Redis configuration uses the namespace '#{namespace}' but the redis-namespace gem is not included in the Gemfile." \
-                                 "Add the gem to your Gemfile to continue using a namespace. Otherwise, remove the namespace parameter.")
-            exit(-127)
-          end
-        else
-          client
-        end
-      end
-
-      private
-
-      def client_opts(options)
-        opts = options.dup
-        if opts[:namespace]
-          opts.delete(:namespace)
-        end
-
-        if opts[:network_timeout]
-          opts[:timeout] = opts[:network_timeout]
-          opts.delete(:network_timeout)
-        end
-
-        # Issue #3303, redis-rb will silently retry an operation.
-        # This can lead to duplicate jobs if Sidekiq::Client's LPUSH
-        # is performed twice but I believe this is much, much rarer
-        # than the reconnect silently fixing a problem; we keep it
-        # on by default.
-        opts[:reconnect_attempts] ||= 1
-
-        opts
-      end
-    end
-
-    @adapter = RedisAdapter
-
     class << self
-      attr_reader :adapter
-
-      # RedisConnection.adapter = :redis
-      # RedisConnection.adapter = :redis_client
-      def adapter=(adapter)
-        raise "no" if adapter == self
-        result = case adapter
-        when :redis
-          RedisAdapter
-        when Class
-          adapter
-        else
-          require "sidekiq/#{adapter}_adapter"
-          nil
-        end
-        @adapter = result if result
-      end
-
       def create(options = {})
-        symbolized_options = options.transform_keys(&:to_sym)
+        symbolized_options = deep_symbolize_keys(options)
+        symbolized_options[:url] ||= determine_redis_provider
+        symbolized_options[:password] = wrap(symbolized_options[:password]) if symbolized_options.key?(:password)
+        symbolized_options[:sentinel_password] = wrap(symbolized_options[:sentinel_password]) if symbolized_options.key?(:sentinel_password)
 
-        if !symbolized_options[:url] && (u = determine_redis_provider)
-          symbolized_options[:url] = u
-        end
+        logger = symbolized_options.delete(:logger)
+        logger&.info { "Sidekiq #{Sidekiq::VERSION} connecting to Redis with options #{scrub(symbolized_options)}" }
 
-        size = if symbolized_options[:size]
-          symbolized_options[:size]
-        elsif Sidekiq.server?
-          # Give ourselves plenty of connections.  pool is lazy
-          # so we won't create them until we need them.
-          Sidekiq[:concurrency] + 5
-        elsif ENV["RAILS_MAX_THREADS"]
-          Integer(ENV["RAILS_MAX_THREADS"])
-        else
-          5
-        end
+        raise "Sidekiq 7+ does not support Redis protocol 2" if symbolized_options[:protocol] == 2
 
-        verify_sizing(size, Sidekiq[:concurrency]) if Sidekiq.server?
+        safe = !!symbolized_options.delete(:cluster_safe)
+        raise ":nodes not allowed, Sidekiq is not safe to run on Redis Cluster" if !safe && symbolized_options.key?(:nodes)
 
-        pool_timeout = symbolized_options[:pool_timeout] || 1
-        log_info(symbolized_options)
+        size = symbolized_options.delete(:size) || 5
+        pool_timeout = symbolized_options.delete(:pool_timeout) || 1
+        pool_name = symbolized_options.delete(:pool_name)
 
-        redis_config = adapter.new(symbolized_options)
-        ConnectionPool.new(timeout: pool_timeout, size: size) do
+        # Default timeout in redis-client is 1 second, which can be too aggressive
+        # if the Sidekiq process is CPU-bound. With 10-15 threads and a thread quantum of 100ms,
+        # it can be easy to get the occasional ReadTimeoutError. You can still provide
+        # a smaller timeout explicitly:
+        #     config.redis = { url: "...", timeout: 1 }
+        symbolized_options[:timeout] ||= 3
+
+        redis_config = Sidekiq::RedisClientAdapter.new(symbolized_options)
+        ConnectionPool.new(timeout: pool_timeout, size: size, name: pool_name) do
           redis_config.new_client
         end
       end
 
       private
 
-      # Sidekiq needs many concurrent Redis connections.
-      #
-      # We need a connection for each Processor.
-      # We need a connection for Pro's real-time change listener
-      # We need a connection to various features to call Redis every few seconds:
-      #   - the process heartbeat.
-      #   - enterprise's leader election
-      #   - enterprise's cron support
-      def verify_sizing(size, concurrency)
-        raise ArgumentError, "Your Redis connection pool is too small for Sidekiq. Your pool has #{size} connections but must have at least #{concurrency + 2}" if size < (concurrency + 2)
+      # Wrap hard-coded passwords in a Proc to avoid logging the value
+      def wrap(pwd)
+        if pwd.is_a?(String)
+          ->(username) { pwd }
+        else
+          pwd
+        end
       end
 
-      def log_info(options)
+      def deep_symbolize_keys(object)
+        case object
+        when Hash
+          object.each_with_object({}) do |(key, value), result|
+            result[key.to_sym] = deep_symbolize_keys(value)
+          end
+        when Array
+          object.map { |e| deep_symbolize_keys(e) }
+        else
+          object
+        end
+      end
+
+      def scrub(options)
         redacted = "REDACTED"
 
         # Deep clone so we can muck with these options all we want and exclude
         # params from dump-and-load that may contain objects that Marshal is
         # unable to safely dump.
-        keys = options.keys - [:logger, :ssl_params]
+        keys = options.keys - [:logger, :ssl_params, :password, :sentinel_password]
         scrubbed_options = Marshal.load(Marshal.dump(options.slice(*keys)))
         if scrubbed_options[:url] && (uri = URI.parse(scrubbed_options[:url])) && uri.password
           uri.password = redacted
           scrubbed_options[:url] = uri.to_s
         end
-        if scrubbed_options[:password]
-          scrubbed_options[:password] = redacted
-        end
+        scrubbed_options[:password] = redacted if options.key?(:password)
+        scrubbed_options[:sentinel_password] = redacted if options.key?(:sentinel_password)
         scrubbed_options[:sentinels]&.each do |sentinel|
-          sentinel[:password] = redacted if sentinel[:password]
+          if sentinel.is_a?(String)
+            if (uri = URI(sentinel)) && uri.password
+              uri.password = redacted
+              sentinel.replace(uri.to_s)
+            end
+          elsif sentinel[:password]
+            sentinel[:password] = redacted
+          end
         end
-        if Sidekiq.server?
-          Sidekiq.logger.info("Booting Sidekiq #{Sidekiq::VERSION} with #{adapter.name} options #{scrubbed_options}")
-        else
-          Sidekiq.logger.debug("#{Sidekiq::NAME} client with #{adapter.name} options #{scrubbed_options}")
-        end
+        scrubbed_options
       end
 
       def determine_redis_provider
@@ -166,9 +108,7 @@ module Sidekiq
           EOM
         end
 
-        ENV[
-          p || "REDIS_URL"
-        ]
+        ENV[p.to_s] || ENV["REDIS_URL"]
       end
     end
   end

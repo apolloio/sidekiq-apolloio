@@ -1,9 +1,12 @@
+# frozen_string_literal: true
+
 require "forwardable"
 
 module Sidekiq
   class RingBuffer
     include Enumerable
     extend Forwardable
+
     def_delegators :@buf, :[], :each, :size
 
     def initialize(size, default = 0)

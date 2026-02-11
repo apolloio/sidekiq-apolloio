@@ -9,7 +9,7 @@ Sidekiq provides a number of public APIs for various functionality.
 
 ## Middleware
 
-Middleware run around the the client-side push and the server-side execution of jobs. This allows plugins which mutate job data or provide additional functionality during the executiong of specific jobs.
+Middleware run around the the client-side push and the server-side execution of jobs. This allows plugins which mutate job data or provide additional functionality during the executing of specific jobs.
 
 ## Lifecycle Events
 
@@ -21,9 +21,3 @@ This is useful for starting and stopping your own Threads or services within the
 The code in `sidekiq/api` provides a Ruby facade on top of Sidekiq's persistent data within Redis.
 It contains many classes and methods for discovering, searching and iterating through the real-time job data within the queues and sets inside Redis.
 This API powers the Sidekiq::Web UI.
-
-## Components (ALPHA)
-
-Coming in Sidekiq 7.0, Components are elements of code which run inside each Sidekiq process.
-They are passed a handle to the Sidekiq container which gives them direct access
-to resources like the Logger, Redis connection pool and other registered resources.

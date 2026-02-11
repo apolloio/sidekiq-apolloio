@@ -31,7 +31,10 @@ function addListeners() {
     node.addEventListener("click", addDataToggleListeners)
   })
 
+  addShiftClickListeners()
   updateFuzzyTimes();
+  updateNumbers();
+  updateProgressBars();
   setLivePollFromUrl();
 
   var buttons = document.querySelectorAll(".live-poll");
@@ -45,6 +48,8 @@ function addListeners() {
       scheduleLivePoll();
     }
   }
+
+  document.getElementById("locale-select").addEventListener("change", updateLocale);
 }
 
 function addPollingListeners(_event)  {
@@ -71,6 +76,23 @@ function addDataToggleListeners(event) {
   }
 }
 
+function addShiftClickListeners() {
+  let checkboxes = Array.from(document.querySelectorAll(".shift_clickable"));
+  let lastChecked = null;
+  checkboxes.forEach(checkbox => {
+    checkbox.addEventListener("click", (e) => {
+      if (e.shiftKey && lastChecked) {
+        let myIndex = checkboxes.indexOf(checkbox);
+        let lastIndex = checkboxes.indexOf(lastChecked);
+        let [min, max] = [myIndex, lastIndex].sort();
+        let newState = checkbox.checked;
+        checkboxes.slice(min, max).forEach(c => c.checked = newState);
+      }
+      lastChecked = checkbox;
+    });
+  });
+}
+
 function updateFuzzyTimes() {
   var locale = document.body.getAttribute("data-locale");
   var parts = locale.split('-');
@@ -82,6 +104,20 @@ function updateFuzzyTimes() {
   var t = timeago()
   t.render(document.querySelectorAll('time'), locale);
   t.cancel();
+}
+
+function updateNumbers() {
+  document.querySelectorAll("[data-nwp]").forEach(node => {
+    let number = parseFloat(node.textContent);
+    let precision = parseInt(node.dataset["nwp"] || 0);
+    if (typeof number === "number") {
+      let formatted = number.toLocaleString(undefined, {
+        minimumFractionDigits: precision,
+        maximumFractionDigits: precision,
+      });
+      node.textContent = formatted;
+    }
+  });
 }
 
 function setLivePollFromUrl() {
@@ -141,4 +177,12 @@ function replacePage(text) {
 
 function showError(error) {
   console.error(error)
+}
+
+function updateLocale(event) {
+  event.target.form.submit();
+}
+
+function updateProgressBars() {
+  document.querySelectorAll('.progress-bar').forEach(bar => { bar.style.width = bar.dataset.width + "%"})
 }

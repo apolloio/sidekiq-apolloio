@@ -2,6 +2,12 @@
 
 module Sidekiq
   module Paginator
+    TYPE_CACHE = {
+      "dead" => "zset",
+      "retry" => "zset",
+      "schedule" => "zset"
+    }
+
     def page(key, pageidx = 1, page_size = 25, opts = nil)
       current_page = (pageidx.to_i < 1) ? 1 : pageidx.to_i
       pageidx = current_page - 1
@@ -19,9 +25,9 @@ module Sidekiq
           total_size, items = conn.multi { |transaction|
             transaction.zcard(key)
             if rev
-              transaction.zrevrange(key, starting, ending, withscores: true)
+              transaction.zrange(key, starting, ending, "REV", "withscores")
             else
-              transaction.zrange(key, starting, ending, withscores: true)
+              transaction.zrange(key, starting, ending, "withscores")
             end
           }
           [current_page, total_size, items]

@@ -1,15 +1,9 @@
-ruby_version: 2.5.0
+ruby_version: 2.7.0
 fix: true
 parallel: true
 ignore:
   - 'lib/sidekiq.rb':
     - Lint/InheritException
-  - 'lib/sidekiq/extensions/**/*':
-    - Style/MissingRespondToMissing
   - '**/*':
     - Lint/RescueException
-    - Security/YAMLLoad
     - Style/GlobalVars
-  - 'test/test*.rb':
-    - Lint/ConstantDefinitionInBlock
-

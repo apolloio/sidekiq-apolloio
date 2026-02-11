@@ -1,9 +1,21 @@
-require "concurrent"
+# frozen_string_literal: true
 
 module Sidekiq
   module Metrics
-    # TODO Support apps without concurrent-ruby
-    Counter = ::Concurrent::AtomicFixnum
+    class Counter
+      def initialize
+        @value = 0
+        @lock = Mutex.new
+      end
+
+      def increment
+        @lock.synchronize { @value += 1 }
+      end
+
+      def value
+        @lock.synchronize { @value }
+      end
+    end
 
     # Implements space-efficient but statistically useful histogram storage.
     # A precise time histogram stores every time. Instead we break times into a set of
@@ -28,8 +40,8 @@ module Sidekiq
         1100, 1700, 2500, 3800, 5750,
         8500, 13000, 20000, 30000, 45000,
         65000, 100000, 150000, 225000, 335000,
-        Float::INFINITY # the "maybe your job is too long" bucket
-      ]
+        1e20 # the "maybe your job is too long" bucket
+      ].freeze
       LABELS = [
         "20ms", "30ms", "45ms", "65ms", "100ms",
         "150ms", "225ms", "335ms", "500ms", "750ms",
@@ -37,8 +49,7 @@ module Sidekiq
         "8.5s", "13s", "20s", "30s", "45s",
         "65s", "100s", "150s", "225s", "335s",
         "Slow"
-      ]
-
+      ].freeze
       FETCH = "GET u16 #0 GET u16 #1 GET u16 #2 GET u16 #3 \
         GET u16 #4 GET u16 #5 GET u16 #6 GET u16 #7 \
         GET u16 #8 GET u16 #9 GET u16 #10 GET u16 #11 \
@@ -46,6 +57,7 @@ module Sidekiq
         GET u16 #16 GET u16 #17 GET u16 #18 GET u16 #19 \
         GET u16 #20 GET u16 #21 GET u16 #22 GET u16 #23 \
         GET u16 #24 GET u16 #25".split
+      HISTOGRAM_TTL = 8 * 60 * 60
 
       def each
         buckets.each { |counter| yield counter.value }
@@ -72,7 +84,7 @@ module Sidekiq
       def fetch(conn, now = Time.now)
         window = now.utc.strftime("%d-%H:%-M")
         key = "#{@klass}-#{window}"
-        conn.bitfield(key, *FETCH)
+        conn.bitfield_ro(key, *FETCH)
       end
 
       def persist(conn, now = Time.now)
@@ -86,7 +98,7 @@ module Sidekiq
         end
 
         conn.bitfield(*cmd) if cmd.size > 3
-        conn.expire(key, 86400)
+        conn.expire(key, HISTOGRAM_TTL)
         key
       end
     end

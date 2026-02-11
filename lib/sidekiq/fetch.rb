@@ -2,10 +2,12 @@
 
 require "sidekiq"
 require "sidekiq/component"
+require "sidekiq/capsule"
 
 module Sidekiq # :nodoc:
   class BasicFetch
     include Sidekiq::Component
+
     # We want the fetch operation to timeout every few seconds so the thread
     # can check if the process is shutting down.
     TIMEOUT = 2
@@ -26,31 +28,28 @@ module Sidekiq # :nodoc:
       end
     }
 
-    def initialize(config)
-      raise ArgumentError, "missing queue list" unless config[:queues]
-      @config = config
-      @strictly_ordered_queues = !!@config[:strict]
-      @queues = @config[:queues].map { |q| "queue:#{q}" }
-      if @strictly_ordered_queues
-        @queues.uniq!
-        @queues << {timeout: TIMEOUT}
-      end
+    def initialize(cap)
+      raise ArgumentError, "missing queue list" unless cap.queues
+      @config = cap
+      @strictly_ordered_queues = cap.mode == :strict
+      @queues = config.queues.map { |q| "queue:#{q}" }
+      @queues.uniq! if @strictly_ordered_queues
     end
 
     def retrieve_work
       qs = queues_cmd
       # 4825 Sidekiq Pro with all queues paused will return an
-      # empty set of queues with a trailing TIMEOUT value.
-      if qs.size <= 1
+      # empty set of queues
+      if qs.size <= 0
         sleep(TIMEOUT)
         return nil
       end
 
-      queue, job = redis { |conn| conn.brpop(*qs) }
+      queue, job = redis { |conn| conn.blocking_call(TIMEOUT, "brpop", *qs, TIMEOUT) }
       UnitOfWork.new(queue, job, config) if queue
     end
 
-    def bulk_requeue(inprogress, options)
+    def bulk_requeue(inprogress)
       return if inprogress.empty?
 
       logger.debug { "Re-queueing terminated jobs" }
@@ -83,7 +82,6 @@ module Sidekiq # :nodoc:
       else
         permute = @queues.shuffle
         permute.uniq!
-        permute << {timeout: TIMEOUT}
         permute
       end
     end

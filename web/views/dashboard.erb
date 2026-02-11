@@ -1,5 +1,4 @@
-<script type="text/javascript" src="<%= root_path %>javascripts/graph.js"></script>
-<script type="text/javascript" src="<%= root_path %>javascripts/dashboard.js"></script>
+<script type="text/javascript" src="<%= root_path %>javascripts/dashboard.js" nonce="<%= csp_nonce %>"></script>
 <div class= "dashboard clearfix">
   <h3 >
     <%= t('Dashboard') %>
@@ -10,15 +9,29 @@
   </h3>
   <div class="interval-slider ltr">
     <span class="interval-slider-label"><%= t('PollingInterval') %>:</span>
-    <span id="sldr-text" class="current-interval">5 sec</span>
+    <span id="sldr-text" class="current-interval">5 s</span>
     <br/>
-    <input id="sldr" type="range" min="2000" max="20000" step="1000" value="5000"/>
+    <input id="sldr" aria-label="<%= t("PollingIntervalMilliseconds") %>" type="range" min="2000" max="20000" step="1000" value="5000"/>
   </div>
 </div>
 
 <div class="row chart">
-  <div id="realtime" data-processed-label="<%= t('Processed') %>" data-failed-label="<%= t('Failed') %>"></div>
-  <div id="realtime-legend"></div>
+  <span id="sr-last-dashboard-update-template" hidden="hidden"><%= t("LastDashboardUpdateTemplateLiteral") %></span>
+  <span id="sr-last-dashboard-update" class="sr-only" role="status"></span>
+
+  <canvas id="realtime-chart">
+    <%= to_json({
+      processedLabel: t('Processed'),
+      failedLabel: t('Failed'),
+      labels: Array.new(50, ""),
+      processed: Array.new(50),
+      failed: Array.new(50),
+      updateUrl: "#{root_path}stats",
+    }) %>
+  </canvas>
+
+  <!-- start with a space in the legend so the height doesn't change when we add content dynamically -->
+  <div id="realtime-legend">&nbsp;</div>
 </div>
 
 <div class="row header">
@@ -34,8 +47,14 @@
     <a href="<%= root_path %>?days=180" class="history-graph <%= "active" if params[:days] == "180" %>"><%= t('SixMonths') %></a>
   </div>
 
-  <div id="history" data-processed-label="<%= t('Processed') %>" data-failed-label="<%= t('Failed') %>" data-processed="<%= h Sidekiq.dump_json(@processed_history) %>" data-failed="<%= h Sidekiq.dump_json(@failed_history) %>" data-update-url="<%= root_path %>stats"></div>
-  <div id="history-legend"></div>
+  <canvas id="history-chart">
+    <%= to_json({
+      processedLabel: t('Processed'),
+      failedLabel: t('Failed'),
+      processed: @processed_history.to_a.reverse,
+      failed: @failed_history.to_a.reverse,
+    }) %>
+  </canvas>
 </div>
 
 <br/>
@@ -82,3 +101,8 @@
     <% end %>
   </div>
 </div>
+
+<script type="text/javascript" src="<%= root_path %>javascripts/chart.min.js" nonce="<%= csp_nonce %>"></script>
+<script type="text/javascript" src="<%= root_path %>javascripts/chartjs-plugin-annotation.min.js" nonce="<%= csp_nonce %>"></script>
+<script type="text/javascript" src="<%= root_path %>javascripts/base-charts.js" nonce="<%= csp_nonce %>"></script>
+<script type="text/javascript" src="<%= root_path %>javascripts/dashboard-charts.js" nonce="<%= csp_nonce %>"></script>

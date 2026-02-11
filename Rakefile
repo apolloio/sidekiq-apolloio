@@ -8,23 +8,12 @@ require "standard/rake"
 # YARD tags: https://www.rubydoc.info/gems/yard/file/docs/Tags.md
 # YARD cheatsheet: https://gist.github.com/phansch/db18a595d2f5f1ef16646af72fe1fb0e
 
+# To check code coverage, include simplecov in the Gemfile and
+# run `COVERAGE=1 bundle exec rake`
+
 Rake::TestTask.new(:test) do |test|
   test.warning = true
-  test.pattern = "test/**/test_*.rb"
+  test.pattern = "test/**/*.rb"
 end
 
-namespace :test do
-  task :redis_client do
-    previous = ENV["SIDEKIQ_REDIS_CLIENT"]
-    ENV["SIDEKIQ_REDIS_CLIENT"] = "1"
-    Rake::Task[:test].execute
-  ensure
-    if previous
-      ENV["SIDEKIQ_REDIS_CLIENT"] = previous
-    else
-      ENV.delete("SIDEKIQ_REDIS_CLIENT")
-    end
-  end
-end
-
-task default: [:standard, :test, "test:redis_client"]
+task default: [:standard, :test]

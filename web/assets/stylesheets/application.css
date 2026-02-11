@@ -72,8 +72,18 @@ h1, h2, h3 {
   line-height: 45px;
 }
 
-.header-with-subheader h2 {
-  margin-top: -18px;
+.progress {
+  margin-bottom: 0;
+}
+
+.w-50 {
+  width: 50%;
+}
+
+.header-container, .header-container .page-title-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .centered {
@@ -368,6 +378,15 @@ img.smallogo {
 .stat p {
   font-size: 0.9em;
 }
+
+.num {
+  font-family: monospace;
+}
+
+td.num {
+  text-align: right;
+}
+
 @media (max-width: 767px) {
   .stats-container {
     display: block;
@@ -415,51 +434,27 @@ div.interval-slider input {
   background: currentcolor;
 }
 
-#realtime-legend,
-#history-legend {
-  width: 580px;
-  text-align: left;
-  margin-top: 5px;
-  float: right;
+#realtime-legend {
+  margin-top: -20px;
+  padding-left: 30px;
+  display: flex;
+  justify-content: end;
+  align-items: center;
 }
-#realtime-legend .timestamp,
-#history-legend .timestamp {
-  display: inline-block;
-  width: 220px;
-  text-align: right;
+#realtime-legend > * {
+  min-width: 14rem;
 }
-#realtime-legend .line,
-#history-legend .line {
-  display: inline-block;
-  margin: 0 0 0 20px;
-}
-#realtime-legend .swatch,
-#history-legend .swatch {
+#realtime-legend .swatch {
   display: inline-block;
   width: 10px;
   height: 10px;
-  margin: 0 8px 0 0;
+  margin: 0 5px;
 }
-#realtime-legend .tag,
-#history-legend .tag {
-  display: inline-block;
-}
-
-@media (max-width: 790px) {
-  #realtime-legend,
-  #history-legend {
-    float: none;
-    width: 100%;
-    margin-bottom: 20px;
-  }
+#realtime-legend .time {
+  min-width: auto;
+  text-align: right;
 }
 
-@media (max-width: 500px) {
-  #realtime-legend,
-  #history-legend {
-    text-align: center;
-  }
-}
 /* Beacon
 ********************************** */
 
@@ -619,247 +614,6 @@ div.interval-slider input {
   }
 }
 
-.rickshaw_graph .detail {
-    pointer-events: none;
-    position: absolute;
-    top: 0;
-    z-index: 2;
-    background: rgba(0, 0, 0, .9);
-    bottom: 0;
-    width: 1px;
-    transition: opacity .25s linear;
-}
-.rickshaw_graph .detail.inactive {
-    opacity: 0
-}
-.rickshaw_graph .detail .item.active {
-    opacity: 1
-}
-.rickshaw_graph .detail .x_label {
-    font-family: Arial, sans-serif;
-    border-radius: 3px;
-    padding: 6px;
-    opacity: .7;
-    border: 1px solid #e0e0e0;
-    font-size: 12px;
-    position: absolute;
-    background: #fff;
-    white-space: nowrap
-}
-.rickshaw_graph .detail .x_label.left {
-    left: 0
-}
-.rickshaw_graph .detail .x_label.right {
-    right: 0
-}
-.rickshaw_graph .detail .item {
-    position: absolute;
-    z-index: 2;
-    border-radius: 3px;
-    padding: .25em;
-    font-size: 12px;
-    font-family: Arial, sans-serif;
-    opacity: 0;
-    background: rgba(0, 0, 0, .4);
-    color: #fff;
-    border: 1px solid rgba(0, 0, 0, .4);
-    margin-left: 1em;
-    margin-right: 1em;
-    margin-top: -1em;
-    white-space: nowrap
-}
-.rickshaw_graph .detail .item.left {
-    left: 0
-}
-.rickshaw_graph .detail .item.right {
-    right: 0
-}
-.rickshaw_graph .detail .item.active {
-    opacity: 1;
-    background: rgba(0, 0, 0, .8)
-}
-.rickshaw_graph .detail .item:after {
-    position: absolute;
-    display: block;
-    width: 0;
-    height: 0;
-    content: "";
-    border: 5px solid transparent
-}
-.rickshaw_graph .detail .item.left:after {
-    top: 1em;
-    left: -5px;
-    margin-top: -5px;
-    border-right-color: rgba(0, 0, 0, .8);
-    border-left-width: 0
-}
-.rickshaw_graph .detail .item.right:after {
-    top: 1em;
-    right: -5px;
-    margin-top: -5px;
-    border-left-color: rgba(0, 0, 0, .8);
-    border-right-width: 0
-}
-.rickshaw_graph .detail .dot {
-    width: 4px;
-    height: 4px;
-    margin-left: -3px;
-    margin-top: -3.5px;
-    border-radius: 5px;
-    position: absolute;
-    box-shadow: 0 0 2px rgba(0, 0, 0, .6);
-    box-sizing: content-box;
-    background: #fff;
-    border-width: 2px;
-    border-style: solid;
-    display: none;
-    background-clip: padding-box
-}
-.rickshaw_graph .detail .dot.active {
-    display: block
-}
-.rickshaw_graph {
-    position: relative
-}
-.rickshaw_graph svg {
-    display: block;
-    overflow: hidden
-}
-.rickshaw_graph .x_tick {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 0;
-    border-left: 1px dotted rgba(0, 0, 0, .5);
-    pointer-events: none
-}
-.rickshaw_graph .x_tick .title {
-    position: absolute;
-    font-family: Arial, sans-serif;
-    white-space: nowrap;
-    margin-left: 3px;
-    bottom: 1px
-}
-.rickshaw_graph .y_axis,
-.rickshaw_graph .x_axis_d3 {
-    fill: none
-}
-.rickshaw_graph .y_ticks .tick line,
-.rickshaw_graph .x_ticks_d3 .tick {
-    stroke: rgba(0, 0, 0, .16);
-    stroke-width: 2px;
-    shape-rendering: crisp-edges;
-    pointer-events: none
-}
-.rickshaw_graph .y_grid .tick,
-.rickshaw_graph .x_grid_d3 .tick {
-    z-index: -1;
-    stroke: rgba(0, 0, 0, .2);
-    stroke-width: 1px;
-    stroke-dasharray: 1 1
-}
-.rickshaw_graph .y_grid .tick[data-y-value="0"] {
-    stroke-dasharray: 1 0
-}
-.rickshaw_graph .y_grid path,
-.rickshaw_graph .x_grid_d3 path {
-    fill: none;
-    stroke: none
-}
-.rickshaw_graph .y_ticks path,
-.rickshaw_graph .x_ticks_d3 path {
-    fill: none;
-    stroke: gray
-}
-.rickshaw_graph .y_ticks text,
-.rickshaw_graph .x_ticks_d3 text {
-    opacity: .7;
-    font-size: 12px;
-    pointer-events: none
-}
-.rickshaw_graph .x_tick.glow .title,
-.rickshaw_graph .y_ticks.glow text {
-    fill: #000;
-    color: #000;
-    text-shadow: -1px 1px 0 rgba(255, 255, 255, .1), 1px -1px 0 rgba(255, 255, 255, .1), 1px 1px 0 rgba(255, 255, 255, .1), 0 1px 0 rgba(255, 255, 255, .1), 0 -1px 0 rgba(255, 255, 255, .1), 1px 0 0 rgba(255, 255, 255, .1), -1px 0 0 rgba(255, 255, 255, .1), -1px -1px 0 rgba(255, 255, 255, .1)
-}
-.rickshaw_graph .x_tick.inverse .title,
-.rickshaw_graph .y_ticks.inverse text {
-    fill: #fff;
-    color: #fff;
-    text-shadow: -1px 1px 0 rgba(0, 0, 0, .8), 1px -1px 0 rgba(0, 0, 0, .8), 1px 1px 0 rgba(0, 0, 0, .8), 0 1px 0 rgba(0, 0, 0, .8), 0 -1px 0 rgba(0, 0, 0, .8), 1px 0 0 rgba(0, 0, 0, .8), -1px 0 0 rgba(0, 0, 0, .8), -1px -1px 0 rgba(0, 0, 0, .8)
-}
-.rickshaw_legend {
-    font-family: Arial;
-    color: #fff;
-    background: #404040;
-    display: inline-block;
-    padding: 12px 5px;
-    border-radius: 2px;
-    position: relative
-}
-.rickshaw_legend:hover {
-    z-index: 10
-}
-.rickshaw_legend .swatch {
-    width: 10px;
-    height: 10px;
-    border: 1px solid rgba(0, 0, 0, .2)
-}
-.rickshaw_legend .line {
-    clear: both;
-    line-height: 140%;
-    padding-right: 15px
-}
-.rickshaw_legend .line .swatch {
-    display: inline-block;
-    margin-right: 3px;
-    border-radius: 2px
-}
-.rickshaw_legend .label {
-    margin: 0;
-    white-space: nowrap;
-    display: inline;
-    font-size: inherit;
-    background-color: transparent;
-    color: inherit;
-    font-weight: 400;
-    line-height: normal;
-    padding: 0;
-    text-shadow: none
-}
-.rickshaw_legend .action:hover {
-    opacity: .6
-}
-.rickshaw_legend .action {
-    margin-right: .2em;
-    opacity: .5;
-    cursor: pointer;
-}
-.rickshaw_legend .line.disabled {
-    opacity: .4
-}
-.rickshaw_legend ul {
-    list-style-type: none;
-    margin: 0;
-    padding: 0;
-    margin: 2px;
-    cursor: pointer
-}
-.rickshaw_legend li {
-    padding: 0 0 0 2px;
-    min-width: 80px;
-    white-space: nowrap
-}
-.rickshaw_legend li:hover {
-    background: rgba(255, 255, 255, .08);
-    border-radius: 3px
-}
-.rickshaw_legend li:active {
-    background: rgba(255, 255, 255, .2);
-    border-radius: 3px
-}
-
 .code-wrap {
   white-space: normal;
 }
@@ -887,37 +641,30 @@ div.interval-slider input {
   }
 }
 
-.redis-url, .redis-namespace {
+.redis-url {
   overflow: hidden;
   white-space: nowrap;
 }
 
 @media (min-width: 768px) {
   .redis-url {
-    max-width: 200px;
+    max-width: 160px;
   }
 
-  .redis-namespace {
-    max-width: 150px;
+  .navbar-fixed-bottom .nav {
+    margin-left: -15px;
+    margin-right: -15px;
   }
 }
 
 @media (min-width: 992px) {
   .redis-url {
-    max-width: 390px;
-  }
-
-  .redis-namespace {
-    max-width: 300px;
+    max-width: 380px;
   }
 }
 @media (min-width: 1200px) {
   .redis-url {
-    max-width: 480px;
-  }
-
-  .redis-namespace {
-    max-width: 350px;
+    max-width: 580px;
   }
 }
 
@@ -951,8 +698,8 @@ div.interval-slider input {
 }
 
 .info-circle {
-  color: #ccc;
-  background-color: #000;
+  color: #333;
+  background-color: #ccc;
   border-radius: 50%;
   text-align: center;
   vertical-align: middle;
@@ -996,4 +743,17 @@ div.interval-slider input {
 
 canvas {
   margin: 20px 0 30px;
+}
+
+#locale-select {
+  float: left;
+  margin: 8px 15px;
+}
+
+@media (max-width: 767px) {
+  #locale-select {
+    float: none;
+    width: auto;
+    margin: 15px auto;
+  }
 }

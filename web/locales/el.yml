@@ -23,8 +23,7 @@ el: # <---- change this to your locale code
   Extras: Extras
   Started: Ξεκίνησε
   ShowAll: Εμφάνιση Όλων
-  CurrentMessagesInQueue: Τρέχουσες εργασίες <span class='title'>%{queue}</span>
-  Delete: Διαγραφή
+  Enqueued: Μπήκαν στην στοίβα
   AddToQueue: Προσθήκη στην στοίβα
   AreYouSureDeleteJob: Θέλετε να διαγράψετε αυτή την εργασία;
   AreYouSureDeleteQueue: Θέλετε να διαγράψετε την στοίβα %{queue}; Αυτό θα διαγράψει όλες τις εργασίες εντός της στοίβας, θα εμφανιστεί ξανά εάν προωθήσετε περισσότερες εργασίες σε αυτήν στο μέλλον.
@@ -42,9 +41,6 @@ el: # <---- change this to your locale code
   RetryAll: Επανάληψη Όλων
   # KillAll: Kill All
   NoRetriesFound: Δεν βρέθηκαν εργασίες προς επαναλήψη
-  Error: Σφάλμα
-  ErrorClass: Κλάση σφάλματος
-  ErrorMessage: Μήνυμα Σφάλματος
   ErrorBacktrace: Backtrace Σφάλματος
   GoBack: ← Πίσω
   NoScheduledFound: Δεν βρέθηκαν προγραμματισμένες εργασίες
@@ -86,7 +82,6 @@ el: # <---- change this to your locale code
   Unpause: Κατάργηση Παύσης
   Metrics: Μετρήσεις
   NoDataFound: Δεν βρέθηκαν δεδομένα
-  ExecutionTime: Συνολικός Χρόνος Εκτέλεσης
+  TotalExecutionTime: Συνολικός Χρόνος Εκτέλεσης
   AvgExecutionTime: Μέσος Χρόνος Εκτέλεσης
   # Context: Context
-

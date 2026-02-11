@@ -8,16 +8,20 @@ module Sidekiq
     SETS = %w[retry schedule]
 
     class Enq
+      include Sidekiq::Component
+
       LUA_ZPOPBYSCORE = <<~LUA
         local key, now = KEYS[1], ARGV[1]
-        local jobs = redis.call("zrangebyscore", key, "-inf", now, "limit", 0, 1)
+        local jobs = redis.call("zrange", key, "-inf", now, "byscore", "limit", 0, 1)
         if jobs[1] then
           redis.call("zrem", key, jobs[1])
           return jobs[1]
         end
       LUA
 
-      def initialize
+      def initialize(container)
+        @config = container
+        @client = Sidekiq::Client.new(config: container)
         @done = false
         @lua_zpopbyscore_sha = nil
       end
@@ -25,15 +29,15 @@ module Sidekiq
       def enqueue_jobs(sorted_sets = SETS)
         # A job's "score" in Redis is the time at which it should be processed.
         # Just check Redis for the set of jobs with a timestamp before now.
-        Sidekiq.redis do |conn|
+        redis do |conn|
           sorted_sets.each do |sorted_set|
             # Get next item in the queue with score (time to execute) <= now.
             # We need to go through the list one at a time to reduce the risk of something
             # going wrong between the time jobs are popped from the scheduled queue and when
             # they are pushed onto a work queue and losing the jobs.
             while !@done && (job = zpopbyscore(conn, keys: [sorted_set], argv: [Time.now.to_f.to_s]))
-              Sidekiq::Client.push(Sidekiq.load_json(job))
-              Sidekiq.logger.debug { "enqueued #{sorted_set}: #{job}" }
+              @client.push(Sidekiq.load_json(job))
+              logger.debug { "enqueued #{sorted_set}: #{job}" }
             end
           end
         end
@@ -47,12 +51,11 @@ module Sidekiq
 
       def zpopbyscore(conn, keys: nil, argv: nil)
         if @lua_zpopbyscore_sha.nil?
-          raw_conn = conn.respond_to?(:redis) ? conn.redis : conn
-          @lua_zpopbyscore_sha = raw_conn.script(:load, LUA_ZPOPBYSCORE)
+          @lua_zpopbyscore_sha = conn.script(:load, LUA_ZPOPBYSCORE)
         end
 
-        conn.evalsha(@lua_zpopbyscore_sha, keys, argv)
-      rescue RedisConnection.adapter::CommandError => e
+        conn.call("EVALSHA", @lua_zpopbyscore_sha, keys.size, *keys, *argv)
+      rescue RedisClient::CommandError => e
         raise unless e.message.start_with?("NOSCRIPT")
 
         @lua_zpopbyscore_sha = nil
@@ -70,9 +73,9 @@ module Sidekiq
 
       INITIAL_WAIT = 10
 
-      def initialize(options)
-        @config = options
-        @enq = (options[:scheduled_enq] || Sidekiq::Scheduled::Enq).new
+      def initialize(config)
+        @config = config
+        @enq = (config[:scheduled_enq] || Sidekiq::Scheduled::Enq).new(config)
         @sleeper = ConnectionPool::TimedStack.new
         @done = false
         @thread = nil
@@ -82,14 +85,10 @@ module Sidekiq
       # Shut down this instance, will pause until the thread is dead.
       def terminate
         @done = true
-        @enq.terminate if @enq.respond_to?(:terminate)
+        @enq.terminate
 
-        if @thread
-          t = @thread
-          @thread = nil
-          @sleeper << 0
-          t.value
-        end
+        @sleeper << 0
+        @thread&.value
       end
 
       def start
@@ -145,7 +144,7 @@ module Sidekiq
         # In the example above, each process should schedule every 10 seconds on average. We special
         # case smaller clusters to add 50% so they would sleep somewhere between 5 and 15 seconds.
         # As we run more processes, the scheduling interval average will approach an even spread
-        # between 0 and poll interval so we don't need this artifical boost.
+        # between 0 and poll interval so we don't need this artificial boost.
         #
         count = process_count
         interval = poll_interval_average(count)
@@ -194,11 +193,11 @@ module Sidekiq
       # should never depend on sidekiq/api.
       def cleanup
         # dont run cleanup more than once per minute
-        return 0 unless Sidekiq.redis { |conn| conn.set("process_cleanup", "1", nx: true, ex: 60) }
+        return 0 unless redis { |conn| conn.set("process_cleanup", "1", "NX", "EX", "60") }
 
         count = 0
-        Sidekiq.redis do |conn|
-          procs = conn.sscan_each("processes").to_a
+        redis do |conn|
+          procs = conn.sscan("processes").to_a
           heartbeats = conn.pipelined { |pipeline|
             procs.each do |key|
               pipeline.hget(key, "info")

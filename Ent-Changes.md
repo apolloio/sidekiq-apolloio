@@ -1,8 +1,163 @@
 # Sidekiq Enterprise Changelog
 
-[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/main/Ent-Changes.md)
+[Sidekiq Changes](https://github.com/sidekiq/sidekiq/blob/main/Changes.md) | [Sidekiq Pro Changes](https://github.com/sidekiq/sidekiq/blob/main/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/sidekiq/sidekiq/blob/main/Ent-Changes.md)
 
 Please see [sidekiq.org](https://sidekiq.org) for more details and how to buy.
+
+7.3.4
+---------
+
+- Tune `inspect` to avoid huge output [#6553]
+- Use backported APIs for Web extension
+
+7.3.3
+---------
+
+- Call `Process.warmup` before fork in sidekiqswarm, use `RUBY_DISABLE_WARMUP=1` to disable [#6279]
+- Disable health checks if running sidekiqswarm, we can't use one port to monitor many children
+
+7.3.2
+---------
+
+- Activate unique server middleware in client-mode so uniqueness works for `perform_inline` [#6460]
+- Add `Sidekiq::Enterprise.gem_version` API
+
+7.3.1
+---------
+
+- Fix healthcheck when defined in config YML [#6352]
+
+7.3.0
+---------
+
+- Allow rate limiting to use Redis Cluster [#6288]
+- Remove `base64` gem dependency
+
+7.2.4
+---------
+
+- Revert #6288 as this requires Sidekiq 7.3 [#6324]
+
+7.2.3
+---------
+
+- Adjust the unlimited rate limiter to work as a points limiter too [#6301]
+- Limiters can now use a clustered Redis client [#6288]
+- Limiters now have attr_readers for all static config elements [#6259]
+- Handle fractional values for SIDEKIQ_COUNT when containers have fractional CPU allocations,
+  e.g. `SIDEKIQ_COUNT=2.5` will create 2 Sidekiq processes. [#6244]
+
+7.2.2
+---------
+
+- Concurrent rate limiter raising ReadTimeoutError? Work around redis/redis#11732 [#6188]
+
+7.2.1
+---------
+
+- Add `within_limit(used: 1)` option to `window` and `bucket` rate limiters.
+  You can adjust the number of points used by a call performing batch operations [#6146]
+- Use HWIA when scheduling periodic ActiveJobs, for compatibility [#6099]
+
+7.2.0
+---------
+
+- Kubernetes health check can be enabled through Sidekiq's config YML.
+  The full binding address can also be configured, not just port. Examples:
+```yaml
+---
+health_check: 127.0.0.1:8111 # static
+health_check: <%= ENV["SIDEKIQ_HEALTH_BINDING"] %> # dynamic!
+```
+```ruby
+config.health_check("127.0.0.1:8111")
+```
+
+7.1.2
+---------
+
+- Add support for a Kubernetes liveness / health check port. Start it with
+  `config.health_check(port = 7433)` [#5923]
+- Add missing points view [#6016]
+- Add Polish translations
+
+7.1.1
+---------
+
+- **Please note that license credentials are required when running in production.**
+  We recommend [configuring credentials with Bundler](https://github.com/sidekiq/sidekiq/wiki/Comm-Installation#sidekiq-enterprise).
+- Fix hash mutation race condition in rate limiter autoloading [#5908]
+
+7.1.0
+---------
+
+- **NEW** Points-based rate limiter popular with GraphQL endpoints at Shopify, GitHub, et al.
+  Thanks to Thad Sauter of NexHealth for contributing the initial skeleton. [#5757]
+- **NEW** Test helper to verify periodic job registration block [#5832]
+```ruby
+require "sidekiq-ent/periodic/testing"
+CRON_BLOCK = ->(mgr) { mgr.register("0 * * * * *", "SomeJob") }
+ct = Sidekiq::Periodic::ConfigTester.new
+ct.verify(&CRON_BLOCK) # => raises ArgumentError, invalid crontab syntax
+```
+- Periodic jobs may now be ActiveJobs [#5902]
+- Refactor rate limiter codebase to use `autoload`
+- Refactor concurrent and bucket rate limiter data model to be cluster-friendly [#5800]
+
+7.0.8
+---------
+
+- Fix mutable job arguments when rescheduling an OverLimit [#5859]
+
+7.0.7
+---------
+
+- Tweak concurrent rate limiter to minimize spurious ReadTimeoutErrors [#5838]
+
+7.0.6
+---------
+
+- Fix redis-client API usage which could result in stuck Redis
+connections [#5823]
+
+7.0.5
+---------
+
+- Revert unique impl which required Redis 7.0 [#5793]
+- Fix spurious "Uh oh" messages with `sidekiqswarm` [#5801]
+
+7.0.4
+---------
+
+- Remove usage of `replicate_commands` Redis directive, default in 5.0, gone in 7.0
+- Fix issue with rate limiter connection pool [#5752]
+- Unique middleware now prints the JID holding the lock if there is a duplicate [#5736]
+  **NOTE**: Unique locks set with older versions (<7.0.4) will not work with newer versions.
+
+7.0.3
+---------
+
+- Allow user to define the context used to calculate unique locks, see the Unique Jobs wiki page [#5544]
+- Smarter connection pool sizing for rate limiters [#5685]
+
+7.0.2
+---------
+
+- Fix crash in graceful restarts [#5667]
+
+7.0.1
+---------
+
+- Fix spurious ReadTimeoutError in concurrent rate limiter [#5611]
+- Fix eager connection to Redis [#5606]
+
+7.0.0
+---------
+
+- Componentize and capsulize Enterprise functionality for Sidekiq 7
+- Remove bucket history graph from Web UI
+- Rename "Cron" tab to "Periodic" [#5590]
+- Add DE locale
 
 2.5.3
 ---------
@@ -23,8 +178,10 @@ when forking preloaded app code [#5535]
 2.5.0
 -------------
 
-- Per the 2.0 upgrade notes, Sidekiq Enterprise will stop if you do not have valid
-  credentials configured on startup.
+- Per the 2.0 upgrade notes, Sidekiq Enterprise will stop if you do not
+  have a licensed username configured on startup. It will extract it from
+  the Bundler environment if possible or look for SIDEKIQ_ENT_USERNAME.
+  `SIDEKIQ_ENT_USERNAME=abcd1234 bundle exec sidekiq`
 - Internal refactoring for Sidekiq 6.5.
 - Requires Sidekiq 6.5, Pro 5.5.
 
@@ -116,8 +273,7 @@ sidekiq.latency.#{name} -> sidekiq.queue.latency with tag queue:#{name}
 2.0.0
 -------------
 
-- Except for the [newly required credentials](https://github.com/mperham/sidekiq/issues/4232), Sidekiq Enterprise 2.0 does
-  not have any significant migration steps.
+- Except for the [newly required credentials](https://github.com/sidekiq/sidekiq/issues/4232), Sidekiq Enterprise 2.0 does not have any significant migration steps.
 - Sidekiq Enterprise must now be started with valid license credentials. [#4232]
 - Call `GC.compact` if possible in sidekiqswarm before forking [#4181]
 - Changes for forward-compatibility with Sidekiq 6.0.
@@ -129,7 +285,7 @@ sidekiq.latency.#{name} -> sidekiq.queue.latency with tag queue:#{name}
 -------------
 
 - Fix excessive lock reclaims with concurrent limiter [#4105]
-- Add ES translations, see issues [#3949](https://github.com/mperham/sidekiq/issues/3949) and [#3951](https://github.com/mperham/sidekiq/issues/3951) to add your own language.
+- Add ES translations, see issues [#3949](https://github.com/sidekiq/sidekiq/issues/3949) and [#3951](https://github.com/sidekiq/sidekiq/issues/3951) to add your own language.
 
 1.8.0
 -------------
@@ -156,7 +312,7 @@ sidekiq.latency.#{name} -> sidekiq.queue.latency with tag queue:#{name}
 1.7.0
 -------------
 
-- **NEW FEATURE** [Rolling restarts](https://github.com/mperham/sidekiq/wiki/Ent-Rolling-Restarts) - great for long running jobs!
+- **NEW FEATURE** [Rolling restarts](https://github.com/sidekiq/sidekiq/wiki/Ent-Rolling-Restarts) - great for long running jobs!
 - Adjust middleware so unique jobs that don't push aren't registered in a Batch [#3662]
 - Add new unlimited rate limiter, useful for testing [#3743]
 ```ruby
@@ -230,7 +386,7 @@ expiry = 1.month.to_i; Sidekiq::Limiter.redis { |c| c.scan_each(match: "lmtr-cfr
 1.3.0
 -------------
 
-- **BETA** [New encryption feature](https://github.com/mperham/sidekiq/wiki/Ent-Encryption)
+- **BETA** [New encryption feature](https://github.com/sidekiq/sidekiq/wiki/Ent-Encryption)
   which automatically encrypts the last argument of a Worker, aka the secret bag.
 
 1.2.4
@@ -270,7 +426,7 @@ MAXMEM_KB=1048576 COUNT=2 bundle exec sidekiqswarm ...
 
 - **NEW FEATURE** Multi-process mode!  Sidekiq Enterprise can now fork multiple worker
   processes, enabling significant memory savings.  See the [wiki
-documentation](https://github.com/mperham/sidekiq/wiki/Ent-Multi-Process) for details.
+documentation](https://github.com/sidekiq/sidekiq/wiki/Ent-Multi-Process) for details.
 
 
 0.7.10
@@ -281,7 +437,7 @@ documentation](https://github.com/mperham/sidekiq/wiki/Ent-Multi-Process) for de
 1.1.0
 -------------
 
-- **NEW FEATURE** Historical queue metrics, [documented in the wiki](https://github.com/mperham/sidekiq/wiki/Ent-Historical-Metrics) [#2719]
+- **NEW FEATURE** Historical queue metrics, [documented in the wiki](https://github.com/sidekiq/sidekiq/wiki/Ent-Historical-Metrics) [#2719]
 
 0.7.9, 1.0.2
 -------------

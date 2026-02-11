@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "securerandom"
 require "time"
 
@@ -9,26 +11,32 @@ module Sidekiq
 
     def validate(item)
       raise(ArgumentError, "Job must be a Hash with 'class' and 'args' keys: `#{item}`") unless item.is_a?(Hash) && item.key?("class") && item.key?("args")
-      raise(ArgumentError, "Job args must be an Array: `#{item}`") unless item["args"].is_a?(Array)
+      raise(ArgumentError, "Job args must be an Array: `#{item}`") unless item["args"].is_a?(Array) || item["args"].is_a?(Enumerator::Lazy)
       raise(ArgumentError, "Job class must be either a Class or String representation of the class name: `#{item}`") unless item["class"].is_a?(Class) || item["class"].is_a?(String)
       raise(ArgumentError, "Job 'at' must be a Numeric timestamp: `#{item}`") if item.key?("at") && !item["at"].is_a?(Numeric)
       raise(ArgumentError, "Job tags must be an Array: `#{item}`") if item["tags"] && !item["tags"].is_a?(Array)
+      raise(ArgumentError, "retry_for must be a relative amount of time, e.g. 48.hours `#{item}`") if item["retry_for"] && item["retry_for"] > 1_000_000_000
     end
 
     def verify_json(item)
       job_class = item["wrapped"] || item["class"]
-      if Sidekiq[:on_complex_arguments] == :raise
-        msg = <<~EOM
-          Job arguments to #{job_class} must be native JSON types, see https://github.com/mperham/sidekiq/wiki/Best-Practices.
-          To disable this error, remove `Sidekiq.strict_args!` from your initializer.
-        EOM
-        raise(ArgumentError, msg) unless json_safe?(item)
-      elsif Sidekiq[:on_complex_arguments] == :warn
-        Sidekiq.logger.warn <<~EOM unless json_safe?(item)
-          Job arguments to #{job_class} do not serialize to JSON safely. This will raise an error in
-          Sidekiq 7.0. See https://github.com/mperham/sidekiq/wiki/Best-Practices or raise an error today
-          by calling `Sidekiq.strict_args!` during Sidekiq initialization.
-        EOM
+      args = item["args"]
+      mode = Sidekiq::Config::DEFAULTS[:on_complex_arguments]
+
+      if mode == :raise || mode == :warn
+        if (unsafe_item = json_unsafe?(args))
+          msg = <<~EOM
+            Job arguments to #{job_class} must be native JSON types, but #{unsafe_item.inspect} is a #{unsafe_item.class}.
+            See https://github.com/sidekiq/sidekiq/wiki/Best-Practices
+            To disable this error, add `Sidekiq.strict_args!(false)` to your initializer.
+          EOM
+
+          if mode == :raise
+            raise(ArgumentError, msg)
+          else
+            warn(msg)
+          end
+        end
       end
     end
 
@@ -49,6 +57,7 @@ module Sidekiq
       item["jid"] ||= SecureRandom.hex(12)
       item["class"] = item["class"].to_s
       item["queue"] = item["queue"].to_s
+      item["retry_for"] = item["retry_for"].to_i if item["retry_for"]
       item["created_at"] ||= Time.now.to_f
       item
     end
@@ -64,8 +73,37 @@ module Sidekiq
 
     private
 
-    def json_safe?(item)
-      JSON.parse(JSON.dump(item["args"])) == item["args"]
+    RECURSIVE_JSON_UNSAFE = {
+      Integer => ->(val) {},
+      Float => ->(val) {},
+      TrueClass => ->(val) {},
+      FalseClass => ->(val) {},
+      NilClass => ->(val) {},
+      String => ->(val) {},
+      Array => ->(val) {
+        val.each do |e|
+          unsafe_item = RECURSIVE_JSON_UNSAFE[e.class].call(e)
+          return unsafe_item unless unsafe_item.nil?
+        end
+        nil
+      },
+      Hash => ->(val) {
+        val.each do |k, v|
+          return k unless String === k
+
+          unsafe_item = RECURSIVE_JSON_UNSAFE[v.class].call(v)
+          return unsafe_item unless unsafe_item.nil?
+        end
+        nil
+      }
+    }
+
+    RECURSIVE_JSON_UNSAFE.default = ->(val) { val }
+    RECURSIVE_JSON_UNSAFE.compare_by_identity
+    private_constant :RECURSIVE_JSON_UNSAFE
+
+    def json_unsafe?(item)
+      RECURSIVE_JSON_UNSAFE[item.class].call(item)
     end
   end
 end

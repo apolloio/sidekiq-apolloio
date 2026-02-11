@@ -5,21 +5,40 @@ require "sidekiq"
 
 module Sidekiq
   class Testing
+    class TestModeAlreadySetError < RuntimeError; end
     class << self
-      attr_accessor :__test_mode
+      attr_accessor :__global_test_mode
 
+      # Calling without a block sets the global test mode, affecting
+      # all threads. Calling with a block only affects the current Thread.
       def __set_test_mode(mode)
         if block_given?
-          current_mode = __test_mode
+          # Reentrant testing modes will lead to a rat's nest of code which is
+          # hard to reason about. You can set the testing mode once globally and
+          # you can override that global setting once per-thread.
+          raise TestModeAlreadySetError, "Nesting test modes is not supported" if __local_test_mode
+
+          self.__local_test_mode = mode
           begin
-            self.__test_mode = mode
             yield
           ensure
-            self.__test_mode = current_mode
+            self.__local_test_mode = nil
           end
         else
-          self.__test_mode = mode
+          self.__global_test_mode = mode
         end
+      end
+
+      def __test_mode
+        __local_test_mode || __global_test_mode
+      end
+
+      def __local_test_mode
+        Thread.current[:__sidekiq_test_mode]
+      end
+
+      def __local_test_mode=(value)
+        Thread.current[:__sidekiq_test_mode] = value
       end
 
       def disable!(&block)
@@ -51,18 +70,9 @@ module Sidekiq
       end
 
       def server_middleware
-        @server_chain ||= Middleware::Chain.new
+        @server_chain ||= Middleware::Chain.new(Sidekiq.default_configuration)
         yield @server_chain if block_given?
         @server_chain
-      end
-
-      def constantize(str)
-        names = str.split("::")
-        names.shift if names.empty? || names.first.empty?
-
-        names.inject(Object) do |constant, name|
-          constant.const_defined?(name) ? constant.const_get(name) : constant.const_missing(name)
-        end
       end
     end
   end
@@ -73,7 +83,7 @@ module Sidekiq
   class EmptyQueueError < RuntimeError; end
 
   module TestingClient
-    def raw_push(payloads)
+    def atomic_push(conn, payloads)
       if Sidekiq::Testing.fake?
         payloads.each do |job|
           job = Sidekiq.load_json(Sidekiq.dump_json(job))
@@ -83,7 +93,7 @@ module Sidekiq
         true
       elsif Sidekiq::Testing.inline?
         payloads.each do |job|
-          klass = Sidekiq::Testing.constantize(job["class"])
+          klass = Object.const_get(job["class"])
           job["id"] ||= SecureRandom.hex(12)
           job_hash = Sidekiq.load_json(Sidekiq.dump_json(job))
           klass.process_job(job_hash)
@@ -102,7 +112,7 @@ module Sidekiq
     # The Queues class is only for testing the fake queue implementation.
     # There are 2 data structures involved in tandem. This is due to the
     # Rspec syntax of change(HardJob.jobs, :size). It keeps a reference
-    # to the array. Because the array was dervied from a filter of the total
+    # to the array. Because the array was derived from a filter of the total
     # jobs enqueued, it appeared as though the array didn't change.
     #
     # To solve this, we'll keep 2 hashes containing the jobs. One with keys based
@@ -218,25 +228,9 @@ module Sidekiq
     #   assert_equal 1, HardJob.jobs.size
     #   assert_equal :something, HardJob.jobs[0]['args'][0]
     #
-    #   assert_equal 0, Sidekiq::Extensions::DelayedMailer.jobs.size
-    #   MyMailer.delay.send_welcome_email('foo@example.com')
-    #   assert_equal 1, Sidekiq::Extensions::DelayedMailer.jobs.size
-    #
     # You can also clear and drain all job types:
     #
-    #   assert_equal 0, Sidekiq::Extensions::DelayedMailer.jobs.size
-    #   assert_equal 0, Sidekiq::Extensions::DelayedModel.jobs.size
-    #
-    #   MyMailer.delay.send_welcome_email('foo@example.com')
-    #   MyModel.delay.do_something_hard
-    #
-    #   assert_equal 1, Sidekiq::Extensions::DelayedMailer.jobs.size
-    #   assert_equal 1, Sidekiq::Extensions::DelayedModel.jobs.size
-    #
-    #   Sidekiq::Worker.clear_all # or .drain_all
-    #
-    #   assert_equal 0, Sidekiq::Extensions::DelayedMailer.jobs.size
-    #   assert_equal 0, Sidekiq::Extensions::DelayedModel.jobs.size
+    #   Sidekiq::Job.clear_all # or .drain_all
     #
     # This can be useful to make sure jobs don't linger between tests:
     #
@@ -284,16 +278,16 @@ module Sidekiq
       def perform_one
         raise(EmptyQueueError, "perform_one called with empty job queue") if jobs.empty?
         next_job = jobs.first
-        Queues.delete_for(next_job["jid"], queue, to_s)
+        Queues.delete_for(next_job["jid"], next_job["queue"], to_s)
         process_job(next_job)
       end
 
       def process_job(job)
-        inst = new
-        inst.jid = job["jid"]
-        inst.bid = job["bid"] if inst.respond_to?(:bid=)
-        Sidekiq::Testing.server_middleware.invoke(inst, job, job["queue"]) do
-          execute_job(inst, job["args"])
+        instance = new
+        instance.jid = job["jid"]
+        instance.bid = job["bid"] if instance.respond_to?(:bid=)
+        Sidekiq::Testing.server_middleware.invoke(instance, job, job["queue"]) do
+          execute_job(instance, job["args"])
         end
       end
 
@@ -318,7 +312,7 @@ module Sidekiq
           job_classes = jobs.map { |job| job["class"] }.uniq
 
           job_classes.each do |job_class|
-            Sidekiq::Testing.constantize(job_class).drain
+            Object.const_get(job_class).drain
           end
         end
       end
@@ -329,13 +323,10 @@ module Sidekiq
     def jobs_for(klass)
       jobs.select do |job|
         marshalled = job["args"][0]
-        marshalled.index(klass.to_s) && YAML.load(marshalled)[0] == klass
+        marshalled.index(klass.to_s) && YAML.safe_load(marshalled)[0] == klass
       end
     end
   end
-
-  Sidekiq::Extensions::DelayedMailer.extend(TestingExtensions) if defined?(Sidekiq::Extensions::DelayedMailer)
-  Sidekiq::Extensions::DelayedModel.extend(TestingExtensions) if defined?(Sidekiq::Extensions::DelayedModel)
 end
 
 if defined?(::Rails) && Rails.respond_to?(:env) && !Rails.env.test? && !$TESTING
